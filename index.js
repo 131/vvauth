@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 'use strict';
 
+const os   = require('os');
 const fs    = require('fs');
 const path  = require('path');
 const url   = require('url');
 const net   = require('net');
-
+const {spawn} = require('child_process');
 
 const {parse} = require('yaml');
 const {args} = require('nyks/process/parseArgs')();
-const deepMixIn  = require('mout/object/deepMixIn');
 const SSHAgent   = require('ssh-agent-js/client');
 const trim       = require('mout/string/trim');
 const get        = require('mout/object/get');
@@ -51,7 +51,19 @@ class vcreds {
       token = await this._login_vault(vault_addr, path, payload);
     }
 
-    console.log({token})
+    let env = {
+      VAULT_TOKEN : token
+    };
+    this._publish_env(env);
+  }
+
+  _publish_env(env) {
+    let cmds = [];
+    for(let [k, v] of Object.entries(env)) {
+      cmds.push(`export ${k}=${v}`);
+      cmds.push(`echo publishing ${k} : ok>&2`);
+    }
+    process.stdout.write(cmds.join("\n") + "\n");
   }
 
   async _login_vault_ssh({vault_addr, path = 'ssh', role}) {
@@ -88,6 +100,26 @@ class vcreds {
 
     return token;
   }
+  async _alias_exists(alias) {
+    let child = spawn('bash', ["-lc", `alias ${alias}`]);
+    return new Promise(resolve => child.on('exit', resolve));
+  }
+
+  async install() {
+    const alias_name = "vauth";
+    const alias_value = "source <(vcreds login)";
+    const bashrc_path = path.resolve(os.homedir(), ".bashrc");
+    let bashrc = fs.existsSync(bashrc_path) ? fs.readFileSync(bashrc_path, 'utf-8').trim() : '';
+    let exists = await this._alias_exists(alias_name);
+    if(exists == 0) {
+      console.error("Alias %s already installed", alias_name);
+      return;
+    }
+    console.error("Alias %s not installed, pushing it to %s", alias_name, bashrc_path);
+
+    fs.writeFileSync(bashrc_path, [bashrc, `alias ${alias_name}="${alias_value}"`].join("\n"));
+    console.error(`Installation ok, please \nsource ${bashrc_path}`);
+  }
 
   async _login_vault(vault_addr, path, payload) {
     let remote_url = `${trim(vault_addr, '/')}/v1/auth/${path}/login`;
@@ -99,16 +131,12 @@ class vcreds {
       throw `Could not login to vault : ${response}`;
 
     response = JSON.parse(response);
-    console.log(response);
+    //console.log(response);
     let token = get(response, 'auth.client_token');
     return token;
   }
 
 
-  async _process_vault({vault_addr, secret_path, jwt_auth, ssh_auth}) {
-
-
-  }
 
 
 }
@@ -116,7 +144,8 @@ class vcreds {
 //ensure module is called directly, i.e. not required
 if(module.parent === null) {
   let cmd = args.shift();
-  require('cnyks/lib/bundle')(vcreds, null, [`--ir://run=${cmd}`]); //start runner
+  let run = cmd ? [`--ir://raw`, `--ir://run=${cmd}`] : [];
+  require('cnyks/lib/bundle')(vcreds, null, run);
 }
 
 
