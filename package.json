@@ -1,0 +1,14 @@
+{
+  "name": "vcreds",
+  "version": "1.0.0",
+  "description": "Vault Creds manager",
+  "main": "index.js",
+  "bin": {
+    "vcreds": "./index.js"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC"
+}
