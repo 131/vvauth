@@ -14,9 +14,11 @@ const SSHAgent   = require('ssh-agent-js/client');
 const trim       = require('mout/string/trim');
 const get        = require('mout/object/get');
 const eachLimit = require('nyks/async/eachLimit');
+const walk       = require('nyks/object/walk');
 
 const request    = require('nyks/http/request');
 const drain      = require('nyks/stream/drain');
+const replaceEnv = require('nyks/string/replaceEnv');
 
 const debug = require('debug');
 
@@ -39,7 +41,7 @@ class vvauth {
     } else {
       if(fs.existsSync(VAUTH_RC)) {
         let body = fs.readFileSync(VAUTH_RC, 'utf8');
-        this.rc = parse(body);
+        this.rc = walk(parse(body), v =>  replaceEnv(v, { env : process.env}));
       }
     }
   }
@@ -72,6 +74,7 @@ class vvauth {
     if(publish) {
       let env = {VAULT_TOKEN};
       this._publish_env(env);
+      process.exit();
     }
     return VAULT_TOKEN;
   }
@@ -83,7 +86,6 @@ class vvauth {
       cmds.push(`echo export ${k}=[redacted] >&2`);
     }
     process.stdout.write(cmds.join("\n") + "\n");
-    process.exit();
   }
 
   async _login_vault_ssh({vault_addr, path = 'ssh', role}) {
