@@ -9,7 +9,7 @@ const net   = require('net');
 const {spawn} = require('child_process');
 
 const {parse} = require('yaml');
-const {args} = require('nyks/process/parseArgs')();
+const {args, dict} = require('nyks/process/parseArgs')();
 const SSHAgent   = require('ssh-agent-js/client');
 const trim       = require('mout/string/trim');
 const get        = require('mout/object/get');
@@ -27,43 +27,63 @@ const logger  = {
 };
 
 
-const VCREDS_RC = ".vcredsrc";
+const VAUTH_RC = ".vauthrc";
+const FUNCTION_NAME = "vauth";
+const FUNCTION_DECL = "function vauth() { source <(/usr/bin/env vauth --source $*); }";
 
-class vcreds {
-  constructor() {
+class vvauth {
+  constructor(rc = null) {
     this.rc = {};
-    if(fs.existsSync(VCREDS_RC)) {
-      let body = fs.readFileSync(VCREDS_RC, 'utf8');
-      this.rc = parse(body);
+    if(rc) {
+      this.rc = rc;
+    } else {
+      if(fs.existsSync(VAUTH_RC)) {
+        let body = fs.readFileSync(VAUTH_RC, 'utf8');
+        this.rc = parse(body);
+      }
     }
   }
 
-  async login() {
+  async _get_token() {
     let {vault_addr, ssh_auth, jwt_auth} = this.rc;
 
     let token = this.rc.VAULT_TOKEN;
     if(!token && ssh_auth && process.env.SSH_AUTH_SOCK)
       token = await this._login_vault_ssh({...ssh_auth, vault_addr});
 
-
     if(!token && jwt_auth && jwt_auth.jwt) {
       let {path, jwt, role} = jwt_auth, payload = {jwt, role};
       token = await this._login_vault(vault_addr, path, payload);
     }
+    return token;
+  }
 
-    let env = {
-      VAULT_TOKEN : token
-    };
-    this._publish_env(env);
+  async login(publish = true) {
+    if(!dict['source'] && publish) {
+      console.error(`echo please use "${FUNCTION_NAME} login"`);
+      process.exit(1);
+    }
+
+    let {vault_addr} = this.rc;
+    console.error("Connecting to %s", vault_addr);
+
+
+    let VAULT_TOKEN = await this._get_token();
+    if(publish) {
+      let env = {VAULT_TOKEN};
+      this._publish_env(env);
+    }
+    return VAULT_TOKEN;
   }
 
   _publish_env(env) {
     let cmds = [];
     for(let [k, v] of Object.entries(env)) {
       cmds.push(`export ${k}=${v}`);
-      cmds.push(`echo publishing ${k} : ok>&2`);
+      cmds.push(`echo export ${k}=[redacted] >&2`);
     }
     process.stdout.write(cmds.join("\n") + "\n");
+    process.exit();
   }
 
   async _login_vault_ssh({vault_addr, path = 'ssh', role}) {
@@ -100,24 +120,22 @@ class vcreds {
 
     return token;
   }
-  async _alias_exists(alias) {
-    let child = spawn('bash', ["-lc", `alias ${alias}`]);
+  async _function_exists(alias) {
+    let child = spawn('bash', ["-lc", `declare -F ${alias}`]);
     return new Promise(resolve => child.on('exit', resolve));
   }
 
   async install() {
-    const alias_name = "vauth";
-    const alias_value = "source <(vcreds login)";
     const bashrc_path = path.resolve(os.homedir(), ".bashrc");
     let bashrc = fs.existsSync(bashrc_path) ? fs.readFileSync(bashrc_path, 'utf-8').trim() : '';
-    let exists = await this._alias_exists(alias_name);
+    let exists = await this._function_exists(FUNCTION_NAME);
     if(exists == 0) {
-      console.error("Alias %s already installed", alias_name);
+      console.error("Function %s already installed", FUNCTION_NAME);
       return;
     }
-    console.error("Alias %s not installed, pushing it to %s", alias_name, bashrc_path);
+    console.error("Alias %s not installed, pushing it to %s", FUNCTION_NAME, bashrc_path);
 
-    fs.writeFileSync(bashrc_path, [bashrc, `alias ${alias_name}="${alias_value}"`].join("\n"));
+    fs.writeFileSync(bashrc_path, [bashrc, FUNCTION_DECL, ""].join("\n"));
     console.error(`Installation ok, please \nsource ${bashrc_path}`);
   }
 
@@ -136,17 +154,21 @@ class vcreds {
     return token;
   }
 
-
-
-
 }
 
 //ensure module is called directly, i.e. not required
 if(module.parent === null) {
-  let cmd = args.shift();
+  let cmd = args.shift(), i = process.argv.indexOf(cmd);
+  if(cmd && i != -1)
+    process.argv.splice(i, 1);
+
+  if(dict['source'] && !cmd) {
+    console.error(`please use "${FUNCTION_NAME} login"`);
+    process.exit(1);
+  }
   let run = cmd ? [`--ir://raw`, `--ir://run=${cmd}`] : [];
-  require('cnyks/lib/bundle')(vcreds, null, run);
+  require('cnyks/lib/bundle')(vvauth, null, run);
 }
 
 
-module.exports = vcreds;
+module.exports = vvauth;

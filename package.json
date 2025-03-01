@@ -1,10 +1,10 @@
 {
-  "name": "vcreds",
+  "name": "vvauth",
   "version": "0.1.0",
-  "description": "Vault Creds manager",
+  "description": "Vault Auth helper",
   "main": "index.js",
   "bin": {
-    "vcreds": "./index.js"
+    "vvauth": "./index.js"
   },
   "scripts": {
     "eslint": "eslint ."
@@ -28,6 +28,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "git@github.com:131/vcreds.git"
+    "url": "git@github.com:131/vvauth.git"
   }
 }
