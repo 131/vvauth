@@ -28,7 +28,7 @@ const logger  = {
 };
 
 
-const VAUTH_RC = ".vauthrc";
+const VAUTH_RC = process.env.VAUTHRC || ".vauthrc";
 const FUNCTION_NAME = "vauth";
 const FUNCTION_DECL = "function vauth() { source <(/usr/bin/env vvauth --ir://raw --source --ir://run=$1 \"${@:2}\"); }";
 
