@@ -9,7 +9,6 @@ const net   = require('net');
 const {spawn} = require('child_process');
 
 const {parse} = require('yaml');
-const {args, dict} = require('nyks/process/parseArgs')();
 const SSHAgent   = require('ssh-agent-js/client');
 const trim       = require('mout/string/trim');
 const get        = require('mout/object/get');
@@ -31,7 +30,7 @@ const logger  = {
 
 const VAUTH_RC = ".vauthrc";
 const FUNCTION_NAME = "vauth";
-const FUNCTION_DECL = "function vauth() { source <(/usr/bin/env vvauth --source $*); }";
+const FUNCTION_DECL = "function vauth() { source <(/usr/bin/env vvauth --ir://raw --source --ir://run=$1 \"${@:2}\"); }";
 
 class vvauth {
   constructor(rc = null) {
@@ -44,6 +43,7 @@ class vvauth {
         this.rc = walk(parse(body), v =>  replaceEnv(v, { env : process.env}));
       }
     }
+
     let {vault_addr} = this.rc;
     if(!vault_addr)
       throw `Invalid vault remote`;
@@ -155,18 +155,8 @@ class vvauth {
 }
 
 //ensure module is called directly, i.e. not required
-if(module.parent === null) {
-  let cmd = args.shift(), i = process.argv.indexOf(cmd);
-  if(cmd && i != -1)
-    process.argv.splice(i, 1);
-
-  if(dict['source'] && !cmd) {
-    console.error(`please use "${FUNCTION_NAME} login"`);
-    process.exit(1);
-  }
-  let run = cmd ? [`--ir://raw`, `--ir://run=${cmd}`] : [];
-  require('cnyks/lib/bundle')(vvauth, null, run);
-}
+if(module.parent === null)
+  require('cnyks/lib/bundle')(vvauth);
 
 
 module.exports = vvauth;
