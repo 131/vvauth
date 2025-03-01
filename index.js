@@ -31,7 +31,7 @@ const logger  = {
 
 const VAUTH_RC = ".vauthrc";
 const FUNCTION_NAME = "vauth";
-const FUNCTION_DECL = "function vauth() { source <(/usr/bin/env vauth --source $*); }";
+const FUNCTION_DECL = "function vauth() { source <(/usr/bin/env vvauth --source $*); }";
 
 class vvauth {
   constructor(rc = null) {
@@ -44,6 +44,10 @@ class vvauth {
         this.rc = walk(parse(body), v =>  replaceEnv(v, { env : process.env}));
       }
     }
+    let {vault_addr} = this.rc;
+    if(!vault_addr)
+      throw `Invalid vault remote`;
+    console.error("vauth bound to '%s'", vault_addr);
   }
 
   async _get_token() {
@@ -60,18 +64,10 @@ class vvauth {
     return token;
   }
 
-  async login(publish = true) {
-    if(!dict['source'] && publish) {
-      console.error(`echo please use "${FUNCTION_NAME} login"`);
-      process.exit(1);
-    }
-
-    let {vault_addr} = this.rc;
-    console.error("Connecting to %s", vault_addr);
-
+  async login(source = false) {
 
     let VAULT_TOKEN = await this._get_token();
-    if(publish) {
+    if(source) {
       let env = {VAULT_TOKEN};
       this._publish_env(env);
       process.exit();
