@@ -110,22 +110,37 @@ class vvauth {
     let {entity_id} = await this._lookup_token(this.VAULT_TOKEN);
     let identity = await this._lookup_identity(this.VAULT_TOKEN, entity_id);
     let profile = {};
-    for(let alias of identity.aliases)
-    {for(let [k, v] of Object.entries(alias.custom_metadata || {}))
-    {if(k.startsWith('env_'))
-      profile[k.substr(4)] = v;}}
-    for(let [k, v] of Object.entries(identity.metadata || {}))
-    {if(k.startsWith('env_'))
-      profile[k.substr(4)] = v;}
+    for(let alias of identity.aliases) {
+      for(let [k, v] of Object.entries(alias.custom_metadata || {})) {
+        if(k.startsWith('env_'))
+          profile[k.substr(4)] = v;
+      }
+    }
+    for(let [k, v] of Object.entries(identity.metadata || {})) {
+      if(k.startsWith('env_'))
+        profile[k.substr(4)] = v;
+    }
     return {entity_id, identity, profile};
   }
 
   async env(source = false) {
     let {profile} = await this._get_profile();
 
-    let env = {VAULT_TOKEN : this.VAULT_TOKEN};
-    for(let [k, v] of Object.entries(this.rc.env || {}))
-      env[k] = profile[v];
+    let env = {VAULT_TOKEN : this.VAULT_TOKEN}, {env : {git, map}} = this.rc;
+    if(git) {
+      map = {...map,
+        "GIT_COMMITTER_NAME" : "VAUTH_USER_NAME",
+        "GIT_COMMITTER_EMAIL" : "VAUTH_USER_MAIL",
+        "GIT_AUTHOR_EMAIL" : "VAUTH_USER_MAIL",
+        "GIT_AUTHOR_NAME" : "VAUTH_USER_NAME",
+        "GIT_USER_LOGIN" : "VAUTH_USER_LOGIN",
+      };
+    }
+
+    for(let [k, v] of Object.entries(map || {})) {
+      if(profile[v])
+        env[k] = profile[v];
+    }
 
     if(source) {
       this._publish_env(env);
