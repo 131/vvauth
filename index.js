@@ -80,7 +80,7 @@ class vvauth {
   _publish_env(env) {
     let cmds = [];
     for(let [k, v] of Object.entries(env)) {
-      cmds.push(`export ${k}=${v}`);
+      cmds.push(`export ${k}="${v}"`);
       cmds.push(`echo export ${k}=[redacted] >&2`);
     }
     process.stdout.write(cmds.join("\n") + "\n");
@@ -126,7 +126,7 @@ class vvauth {
   async env(source = false) {
     let {profile} = await this._get_profile();
 
-    let env = {VAULT_TOKEN : this.VAULT_TOKEN}, {env : {git, map}} = this.rc;
+    let env = {VAULT_TOKEN : this.VAULT_TOKEN}, {git, map} = this.rc.env || {};
     if(git) {
       map = {...map,
         "GIT_COMMITTER_NAME" : "VAUTH_USER_NAME",
