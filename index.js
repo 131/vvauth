@@ -52,7 +52,7 @@ class vvauth {
       let vauth_rc = VAUTH_RC.filter(path => path && fs.existsSync(path))[0];
       if(vauth_rc) {
         let body = fs.readFileSync(vauth_rc, 'utf8');
-        this.rc = walk(parse(body), v =>  replaceEnv(v, process.env));
+        this.rc = walk(parse(body), v =>  replaceEnv(v, {env : process.env}));
       }
     }
 
@@ -136,37 +136,27 @@ class vvauth {
   async env(source = false) {
     let {profile} = await this._get_profile();
 
-    let env = {VAULT_TOKEN : this.VAULT_TOKEN},
-      {git, map = [], paths, path : mount = "secrets"} = this.rc.env || {};
-
-    if(!Array.isArray(map))
-      map = [map];
+    let env = {VAULT_TOKEN : this.VAULT_TOKEN}, secrets = {},
+      {git, map = {}, paths, path : mount = "secrets"} = this.rc.env || {};
 
     if(git) {
-      map.push({
-        "GIT_COMMITTER_NAME" : "VAUTH_USER_NAME",
-        "GIT_COMMITTER_EMAIL" : "VAUTH_USER_MAIL",
-        "GIT_AUTHOR_EMAIL" : "VAUTH_USER_MAIL",
-        "GIT_AUTHOR_NAME" : "VAUTH_USER_NAME",
-        "GIT_USER_LOGIN" : "VAUTH_USER_LOGIN",
-      });
+      map = {...map,
+        "GIT_COMMITTER_NAME" : profile.VAUTH_USER_NAME,
+        "GIT_COMMITTER_EMAIL" : profile.VAUTH_USER_MAIL,
+        "GIT_AUTHOR_EMAIL" : profile.VAUTH_USER_MAIL,
+        "GIT_AUTHOR_NAME" : profile.VAUTH_USER_NAME,
+        "GIT_USER_LOGIN" : profile.VAUTH_USER_LOGIN,
+      };
     }
     if(paths) {
       for(let secret_path of paths) {
         console.error("reaching paths", secret_path);
         let data = await this._read(mount, secret_path);
-        profile = {...profile, ...data};
+        secrets = {...secrets, ...data};
       }
     }
-
-    for(let entry of map) {
-      if(typeof entry == "string")
-        entry = {[entry] : entry};
-      for(let [k, v] of Object.entries(entry)) {
-        if(profile[v])
-          env[k] = profile[v];
-      }
-    }
+    for(let [k, v] of Object.entries(map))
+      env[k] = replaceEnv(v, {env : process.env, profile, secrets});
 
     if(source) {
       this._publish_env(env);
