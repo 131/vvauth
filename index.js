@@ -66,7 +66,7 @@ class vvauth {
   }
 
   async connect() {
-    let {VAULT_TOKEN, rc : {ssh_auth, jwt_auth}} = this;
+    let VAULT_TOKEN, {rc : {ssh_auth, jwt_auth}} = this;
 
     if(!VAULT_TOKEN && ssh_auth && process.env.SSH_AUTH_SOCK)
       VAULT_TOKEN = await this._login_vault_ssh({...ssh_auth});
