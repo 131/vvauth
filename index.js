@@ -9,6 +9,7 @@ const net   = require('net');
 const {spawn} = require('child_process');
 
 const {parse} = require('yaml');
+const semver     = require('semver');
 const SSHAgent   = require('ssh-agent-js/client');
 const trim       = require('mout/string/trim');
 const get        = require('mout/object/get');
@@ -35,6 +36,15 @@ const FUNCTION_DECL = "function vauth() { source <(/usr/bin/env vvauth --ir://ra
 class vvauth {
   constructor(rc = null) {
 
+
+    let {dependencies = {}} = require(path.resolve('package.json'));
+
+    for(let [module_name, module_version]  of Object.entries(dependencies)) {
+      let {version} = require(require.resolve(`${module_name}/package.json`));
+      if(!semver.satisfies(version, module_version))
+        throw `Unsupported ${module_name} version (requires ${module_version})`;
+    }
+
     this.rc = {};
     if(rc) {
       this.rc = rc;
@@ -42,7 +52,7 @@ class vvauth {
       let vauth_rc = VAUTH_RC.filter(path => path && fs.existsSync(path))[0];
       if(vauth_rc) {
         let body = fs.readFileSync(vauth_rc, 'utf8');
-        this.rc = walk(parse(body), v =>  replaceEnv(v, { env : process.env}));
+        this.rc = walk(parse(body), v =>  replaceEnv(v, process.env));
       }
     }
 
@@ -126,26 +136,50 @@ class vvauth {
   async env(source = false) {
     let {profile} = await this._get_profile();
 
-    let env = {VAULT_TOKEN : this.VAULT_TOKEN}, {git, map} = this.rc.env || {};
+    let env = {VAULT_TOKEN : this.VAULT_TOKEN},
+      {git, map = [], paths, path : mount = "secrets"} = this.rc.env || {};
+
+    if(!Array.isArray(map))
+      map = [map];
+
     if(git) {
-      map = {...map,
+      map.push({
         "GIT_COMMITTER_NAME" : "VAUTH_USER_NAME",
         "GIT_COMMITTER_EMAIL" : "VAUTH_USER_MAIL",
         "GIT_AUTHOR_EMAIL" : "VAUTH_USER_MAIL",
         "GIT_AUTHOR_NAME" : "VAUTH_USER_NAME",
         "GIT_USER_LOGIN" : "VAUTH_USER_LOGIN",
-      };
+      });
+    }
+    if(paths) {
+      for(let secret_path of paths) {
+        console.error("reaching paths", secret_path);
+        let data = await this._read(mount, secret_path);
+        profile = {...profile, ...data};
+      }
     }
 
-    for(let [k, v] of Object.entries(map || {})) {
-      if(profile[v])
-        env[k] = profile[v];
+    for(let entry of map) {
+      if(typeof entry == "string")
+        entry = {[entry] : entry};
+      for(let [k, v] of Object.entries(entry)) {
+        if(profile[v])
+          env[k] = profile[v];
+      }
     }
 
     if(source) {
       this._publish_env(env);
       process.exit();
     }
+  }
+
+
+  async _read(mount, secret_path) {
+    let remote_url = `${trim(this.vault_addr, '/')}/v1/${mount}/data/${trim(secret_path, '/')}`;
+    let query = {...url.parse(remote_url), headers : {'x-vault-token' : this.VAULT_TOKEN}, expect : 200};
+    let res = await request(query);
+    return get(JSON.parse(String(await drain(res))), 'data.data');
   }
 
   async _login_vault_ssh({path = 'ssh', role}) {
