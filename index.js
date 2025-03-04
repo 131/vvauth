@@ -56,13 +56,13 @@ class vvauth {
       }
     }
 
-    this.vault_addr = this.rc.vault_addr;
+    this.VAULT_ADDR = this.rc.vault_addr;
 
-    if(!this.vault_addr)
+    if(!this.VAULT_ADDR)
       throw `Invalid vault remote`;
 
     this.VAULT_TOKEN = process.env.VAULT_TOKEN;
-    console.error("vauth bound to '%s'", this.vault_addr);
+    console.error("vauth bound to '%s'", this.VAULT_ADDR);
   }
 
   async connect() {
@@ -90,7 +90,7 @@ class vvauth {
   _publish_env(env) {
     let cmds = [];
     for(let [k, v] of Object.entries(env)) {
-      cmds.push(`export ${k}="${v}"`);
+      cmds.push(`export ${k}=${shellEscape(v)}`);
       cmds.push(`echo export ${k}=[redacted] >&2`);
     }
     process.stdout.write(cmds.join("\n") + "\n");
@@ -136,7 +136,7 @@ class vvauth {
   async env(source = false) {
     let {profile} = await this._get_profile();
 
-    let env = {VAULT_TOKEN : this.VAULT_TOKEN}, secrets = {},
+    let env = {VAULT_TOKEN : this.VAULT_TOKEN, VAULT_ADDR : this.VAULT_ADDR}, secrets = {},
       {git, map = {}, paths, path : mount = "secrets"} = this.rc.env || {};
 
     if(git) {
@@ -166,7 +166,7 @@ class vvauth {
 
 
   async _read(mount, secret_path) {
-    let remote_url = `${trim(this.vault_addr, '/')}/v1/${mount}/data/${trim(secret_path, '/')}`;
+    let remote_url = `${trim(this.VAULT_ADDR, '/')}/v1/${mount}/data/${trim(secret_path, '/')}`;
     let query = {...url.parse(remote_url), headers : {'x-vault-token' : this.VAULT_TOKEN}, expect : 200};
     let res = await request(query);
     return get(JSON.parse(String(await drain(res))), 'data.data');
@@ -184,7 +184,7 @@ class vvauth {
       if(token)
         return;
 
-      let remote_url = `${trim(this.vault_addr, '/')}/v1/auth/${path}/nonce`;
+      let remote_url = `${trim(this.VAULT_ADDR, '/')}/v1/auth/${path}/nonce`;
       let query = {...url.parse(remote_url), json : true};
       let res = await request(query);
       let {data : {nonce}} = JSON.parse(String(await drain(res)));
@@ -227,7 +227,7 @@ class vvauth {
   }
 
   async _lookup_token(token) {
-    let remote_url = `${trim(this.vault_addr, '/')}/v1/auth/token/lookup-self`;
+    let remote_url = `${trim(this.VAULT_ADDR, '/')}/v1/auth/token/lookup-self`;
     let query = {...url.parse(remote_url), headers : {'x-vault-token' : token}, expect : 200};
     let res = await request(query);
     let response = JSON.parse(await drain(res)).data;
@@ -235,14 +235,14 @@ class vvauth {
   }
 
   async _lookup_identity(token, id) {
-    let remote_url = `${trim(this.vault_addr, '/')}/v1/identity/entity/id/${id}`;
+    let remote_url = `${trim(this.VAULT_ADDR, '/')}/v1/identity/entity/id/${id}`;
     let query = {...url.parse(remote_url), headers : {'x-vault-token' : token}, expect : 200};
     let res = await request(query);
     return JSON.parse(String(await drain(res))).data;
   }
 
   async _update_identity(token, id, payload) {
-    let remote_url = `${trim(this.vault_addr, '/')}/v1/identity/entity/id/${id}`;
+    let remote_url = `${trim(this.VAULT_ADDR, '/')}/v1/identity/entity/id/${id}`;
     let query = {...url.parse(remote_url), headers : {'x-vault-token' : token}, expect : 204, json : true};
     await request(query, payload);
     return payload;
@@ -251,7 +251,7 @@ class vvauth {
 
 
   async _login_vault(path, payload) {
-    let remote_url = `${trim(this.vault_addr, '/')}/v1/auth/${path}/login`;
+    let remote_url = `${trim(this.VAULT_ADDR, '/')}/v1/auth/${path}/login`;
     let query = {...url.parse(remote_url), json : true};
     let res = await request(query, payload);
     let response = String(await drain(res));
@@ -265,6 +265,10 @@ class vvauth {
   }
 
 }
+
+const shellEscape = (arg) =>  {
+  return arg.replace(/([$!'"();`*?{}[\]<>&%#~@\\ ])/g, '\\$1');
+};
 
 //ensure module is called directly, i.e. not required
 if(module.parent === null)
