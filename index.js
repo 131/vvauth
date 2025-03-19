@@ -5,7 +5,6 @@ const os   = require('os');
 const fs    = require('fs');
 const path  = require('path');
 const url   = require('url');
-const net   = require('net');
 const {spawn} = require('child_process');
 
 const {parse} = require('yaml');
@@ -178,7 +177,7 @@ class vvauth {
 
 
     let agent = new OpenSSHAgent(process.env.SSH_AUTH_SOCK);
-    let keys = await promiser(chain => agent.getIdentities(chain))
+    let keys = await promiser(chain => agent.getIdentities(chain));
 
 
     let token;
