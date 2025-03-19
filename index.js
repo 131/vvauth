@@ -10,7 +10,6 @@ const {spawn} = require('child_process');
 
 const {parse} = require('yaml');
 const semver     = require('semver');
-const SSHAgent   = require('ssh-agent-js/client');
 const trim       = require('mout/string/trim');
 const get        = require('mout/object/get');
 const eachLimit = require('nyks/async/eachLimit');
@@ -19,7 +18,9 @@ const walk       = require('nyks/object/walk');
 const request    = require('nyks/http/request');
 const drain      = require('nyks/stream/drain');
 const replaceEnv = require('nyks/string/replaceEnv');
+const promiser   = require('nyks/function/promiser');
 
+const {OpenSSHAgent} = require('ssh2/lib/agent');
 const debug = require('debug');
 
 const logger  = {
@@ -174,13 +175,14 @@ class vvauth {
 
   async _login_vault_ssh({path = 'ssh', role}) {
     logger.info("Trying to auth as '%s'", role);
-    let sock;
-    await new Promise(resolve => (sock = net.connect(process.env.SSH_AUTH_SOCK, resolve)));
-    let agent = new SSHAgent(sock);
-    let keys = Object.values(await agent.list_keys());
+
+
+    let agent = new OpenSSHAgent(process.env.SSH_AUTH_SOCK);
+    let keys = await promiser(chain => agent.getIdentities(chain))
+
 
     let token;
-    await eachLimit(keys, 1, async ({type, ssh_key, fingerprint, comment}) => {
+    await eachLimit(keys, 1, async (pubKey) => {
       if(token)
         return;
 
@@ -189,18 +191,16 @@ class vvauth {
       let res = await request(query);
       let {data : {nonce}} = JSON.parse(String(await drain(res)));
 
-      const public_key = `${type} ${ssh_key}`;
-      const {signature} =  await agent.sign(fingerprint, Buffer.from(nonce));
-
+      const signature =  (await promiser(chain => agent.sign(pubKey, Buffer.from(nonce), {}, chain))).toString('base64');
+      const public_key = pubKey.type + ' ' + pubKey.getPublicSSH().toString('base64');
       const payload = {public_key, role, nonce : Buffer.from(nonce).toString('base64'), signature};
       try {
         token = await this._login_vault(path, payload);
       } catch(err) {
-        logger.debug("ssh : invalid challenge for public key", comment);
+        logger.debug("ssh : invalid challenge for public key", pubKey.comment);
       }
     });
 
-    sock.destroy();
 
     if(!token)
       throw `Could not login to vault`;
