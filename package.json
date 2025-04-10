@@ -12,9 +12,9 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "cnyks": "^3.0.6",
+    "cnyks": "^3.2.1",
     "debug": "^4.3.4",
-    "mout": "^1.0.0",
+    "mout": "^1.2.4",
     "nyks": "^6.15.0",
     "semver": "^7.5.4",
     "ssh2": "^1.16.0",

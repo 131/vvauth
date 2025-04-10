@@ -6,6 +6,7 @@ const fs    = require('fs');
 const path  = require('path');
 const url   = require('url');
 const {spawn} = require('child_process');
+const passthru = require('nyks/child_process/passthru');
 
 const {parse} = require('yaml');
 const semver     = require('semver');
@@ -63,10 +64,12 @@ class vvauth {
     this.VAULT_TOKEN = process.env.VAULT_TOKEN;
     console.error("vauth bound to '%s'", this.VAULT_ADDR);
   }
-  async run(profile = "main") {
-console.log(process.argv, profile);
-process.exit();
 
+  async run() {
+    let args = process.argv.slice(process.argv.indexOf("run") + 1);
+    let env = await this.env(), cmd = args.shift();
+    await passthru(cmd, args, {env : {...process.env, ...env}}).catch((err) => (console.error("run failure : ", err), process.exit(1)));
+    process.exit();
   }
 
   async connect() {
@@ -166,6 +169,7 @@ process.exit();
       this._publish_env(env);
       process.exit();
     }
+    return env;
   }
 
 
