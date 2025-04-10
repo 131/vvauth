@@ -18,6 +18,8 @@ const request    = require('nyks/http/request');
 const drain      = require('nyks/stream/drain');
 const replaceEnv = require('nyks/string/replaceEnv');
 const promiser   = require('nyks/function/promiser');
+const {args} = require('nyks/process/parseArgs')();
+
 
 const {OpenSSHAgent} = require('ssh2/lib/agent');
 const debug = require('debug');
@@ -30,11 +32,11 @@ const logger  = {
 
 
 const VAUTH_RC = [process.env.VAUTHRC, path.join(process.cwd(), ".vauthrc"), path.join(os.homedir(), ".vauthrc")];
-const FUNCTION_NAME = "vauth";
-const FUNCTION_DECL = "function vauth() { source <(/usr/bin/env vvauth --ir://raw --source --ir://run=$1 \"${@:2}\"); }";
+const FUNCTION_NAME = "venv";
+const FUNCTION_DECL = `function ${FUNCTION_NAME}() { source <(/usr/bin/env vauth env --source); }`;
 
 class vvauth {
-  constructor(rc = null) {
+  constructor() {
 
 
     let {dependencies = {}} = require(path.resolve('package.json'));
@@ -46,14 +48,11 @@ class vvauth {
     }
 
     this.rc = {};
-    if(rc) {
-      this.rc = rc;
-    } else {
-      let vauth_rc = VAUTH_RC.filter(path => path && fs.existsSync(path))[0];
-      if(vauth_rc) {
-        let body = fs.readFileSync(vauth_rc, 'utf8');
-        this.rc = walk(parse(body), v =>  replaceEnv(v, {env : process.env}));
-      }
+
+    let vauth_rc = VAUTH_RC.filter(path => path && fs.existsSync(path))[0];
+    if(vauth_rc) {
+      let body = fs.readFileSync(vauth_rc, 'utf8');
+      this.rc = walk(parse(body), v =>  replaceEnv(v, {env : process.env}));
     }
 
     this.VAULT_ADDR = this.rc.vault_addr;
@@ -63,6 +62,11 @@ class vvauth {
 
     this.VAULT_TOKEN = process.env.VAULT_TOKEN;
     console.error("vauth bound to '%s'", this.VAULT_ADDR);
+  }
+  async run(profile = "main") {
+console.log(process.argv, profile);
+process.exit();
+
   }
 
   async connect() {
@@ -270,8 +274,9 @@ const shellEscape = (arg) =>  {
 };
 
 //ensure module is called directly, i.e. not required
-if(module.parent === null)
-  require('cnyks/lib/bundle')(vvauth);
-
+if(module.parent === null) {
+  let cmd = args.shift();
+  require('cnyks/lib/bundle')(vvauth, null, cmd ? [`--ir://run=${cmd}`, '--ir://raw'] : ['--ir://raw']);
+}
 
 module.exports = vvauth;

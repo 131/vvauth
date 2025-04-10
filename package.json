@@ -4,7 +4,7 @@
   "description": "Vault Auth helper",
   "main": "index.js",
   "bin": {
-    "vvauth": "./index.js"
+    "vauth": "./index.js"
   },
   "scripts": {
     "eslint": "eslint ."
