@@ -40,12 +40,14 @@ class vvauth {
   constructor() {
 
 
-    let {dependencies = {}} = require(path.resolve('package.json'));
-
-    for(let [module_name, module_version]  of Object.entries(dependencies)) {
-      let {version} = require(require.resolve(`${module_name}/package.json`));
-      if(!semver.satisfies(version, module_version))
-        throw `Unsupported ${module_name} version (requires ${module_version})`;
+    let manifest = path.resolve('package.json');
+    if(fs.existsSync(manifest)) {
+      let {dependencies = {}} = require(path.resolve('package.json'));
+      for(let [module_name, module_version]  of Object.entries(dependencies)) {
+        let {version} = require(require.resolve(`${module_name}/package.json`));
+        if(!semver.satisfies(version, module_version))
+          throw `Unsupported ${module_name} version (requires ${module_version})`;
+      }
     }
 
     this.rc = {};
@@ -274,7 +276,7 @@ class vvauth {
 }
 
 const shellEscape = (arg) =>  {
-  return arg.replace(/([$!'"();`*?{}[\]<>&%#~@\\ ])/g, '\\$1');
+  return String(arg).replace(/([$!'"();`*?{}[\]<>&%#~@\\ ])/g, '\\$1');
 };
 
 //ensure module is called directly, i.e. not required
