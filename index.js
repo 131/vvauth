@@ -43,8 +43,13 @@ class vvauth {
     let manifest = path.resolve('package.json');
     if(fs.existsSync(manifest)) {
       let {dependencies = {}} = require(path.resolve('package.json'));
+
       for(let [module_name, module_version]  of Object.entries(dependencies)) {
-        let {version} = require(require.resolve(`${module_name}/package.json`));
+
+        let {version} = require(require.resolve(`${module_name}/package.json`, {
+          paths : [path.resolve('node_modules')]
+        }));
+
         if(!semver.satisfies(version, module_version))
           throw `Unsupported ${module_name} version (requires ${module_version})`;
       }
