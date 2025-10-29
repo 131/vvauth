@@ -104,7 +104,7 @@ class vvauth {
   _publish_env(env) {
     let cmds = [];
     for(let [k, v] of Object.entries(env)) {
-      cmds.push(`export ${k}=${shellEscape(v)}`);
+      cmds.push(`export ${k}="${shellEscape(v)}"`);
       cmds.push(`echo export ${k}="[redacted]" >&2`);
     }
     process.stdout.write(cmds.join("\n") + "\n");
