@@ -281,7 +281,8 @@ class vvauth {
 }
 
 const shellEscape = (arg) =>  {
-  return String(arg).replace(/([|$!'"();`*?{}[\]<>&%#~@\\ ])/g, '\\$1');
+  // see man bash
+  return "'"+ String(arg).replace(/'/g, '\'"\'"\'') + "'";;
 };
 
 //ensure module is called directly, i.e. not required
