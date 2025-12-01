@@ -147,6 +147,34 @@ class vvauth {
     return {entity_id, identity, profile};
   }
 
+
+  async dotenv() {
+    let {profile} = await this._get_profile();
+
+    let env = {VAULT_TOKEN : this.VAULT_TOKEN, VAULT_ADDR : this.VAULT_ADDR}, secrets = {},
+      {map = {}, paths, path : mount = "secrets"} = this.rc.env || {};
+
+
+    if(paths) {
+      for(let secret_path of paths) {
+        console.error("reaching paths", secret_path);
+        let data = await this._read(mount, secret_path);
+        secrets = {...secrets, ...data};
+      }
+
+    }
+    for(let [k, v] of Object.entries(map))
+      env[k] = replaceEnv(v, {env : process.env, profile, secrets});
+
+    for(let [k, v] of Object.entries(env)) {
+      process.stdout.write(`${k}=${shellEscape(v)}\n`);
+      process.stderr.write(`export ${k}=[redacted]\n`);
+    }
+
+    process.exit();
+  }
+
+
   async env(source = false) {
     let {profile} = await this._get_profile();
 
