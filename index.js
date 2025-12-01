@@ -167,7 +167,7 @@ class vvauth {
       env[k] = replaceEnv(v, {env : process.env, profile, secrets});
 
     for(let [k, v] of Object.entries(env)) {
-      process.stdout.write(`${k}=${shellEscape(v)}\n`);
+      process.stdout.write(`${k}=${JSON.stringify(String(v))}\n`);
       process.stderr.write(`export ${k}=[redacted]\n`);
     }
 
