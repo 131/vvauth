@@ -112,7 +112,7 @@ class vvauth {
 
 
   async set(k, v) {
-    let {entity_id, identity : {metadata}} = await this._get_profile();
+    let {entity_id, identity : {metadata}} = await this._vault_get_profile();
     if(!metadata)
       metadata = {};
     let key_name = `env_${k.toUpperCase()}`;
@@ -125,12 +125,16 @@ class vvauth {
   }
 
   async show() {
-    let {profile} = await this._get_profile();
+    let {profile} = await this._vault_get_profile();
     return profile;
   }
 
-  async _get_profile() {
+  async _vault_get_profile() {
     await this.connect();
+
+    if(!this.VAULT_TOKEN)
+      return {};
+
     let {entity_id} = await this._lookup_token(this.VAULT_TOKEN);
     let identity = await this._lookup_identity(this.VAULT_TOKEN, entity_id);
     let profile = {};
@@ -147,39 +151,21 @@ class vvauth {
     return {entity_id, identity, profile};
   }
 
-
-  async dotenv() {
-    let {profile} = await this._get_profile();
-
-    let env = {VAULT_TOKEN : this.VAULT_TOKEN, VAULT_ADDR : this.VAULT_ADDR}, secrets = {},
-      {map = {}, paths, path : mount = "secrets"} = this.rc.env || {};
-
-
-    if(paths) {
-      for(let secret_path of paths) {
-        console.error("reaching paths", secret_path);
-        let data = await this._read(mount, secret_path);
-        secrets = {...secrets, ...data};
-      }
-
-    }
-    for(let [k, v] of Object.entries(map))
-      env[k] = replaceEnv(v, {env : process.env, profile, secrets});
-
-    for(let [k, v] of Object.entries(env)) {
-      process.stdout.write(`${k}=${String(v)}\n`);
-      process.stderr.write(`export ${k}=[redacted]\n`);
-    }
-
-    process.exit();
-  }
-
-
-  async env(source = false) {
-    let {profile} = await this._get_profile();
+  async _get_env() {
+    let {profile} = await this._vault_get_profile();
 
     let env = {VAULT_TOKEN : this.VAULT_TOKEN, VAULT_ADDR : this.VAULT_ADDR}, secrets = {},
       {git, map = {}, paths, path : mount = "secrets"} = this.rc.env || {};
+
+    let {'ssh-agent-crypt' : agent } = this.rc;
+    if(agent) {
+      const {path, identity} = agent;
+      let child = spawn('ssh-agent-crypt', ["-decrypt", identity]);
+
+      child.stdin.end(fs.readFileSync(path));
+      const result = JSON.parse(await drain(child.stdout));
+      secrets = {...secrets, ...result};
+    }
 
     if(git) {
       map = {...map,
@@ -193,31 +179,48 @@ class vvauth {
     if(paths) {
       for(let secret_path of paths) {
         console.error("reaching paths", secret_path);
-        let data = await this._read(mount, secret_path);
+        let data = await this._vault_read(mount, secret_path);
         secrets = {...secrets, ...data};
       }
     }
     for(let [k, v] of Object.entries(map))
       env[k] = replaceEnv(v, {env : process.env, profile, secrets});
 
+    return env;
+  }
+
+  async dotenv() {
+    const env = await this._get_env();
+
+    for(let [k, v] of Object.entries(env)) {
+      process.stdout.write(`${k}=${String(v)}\n`);
+      process.stderr.write(`export ${k}=[redacted]\n`);
+    }
+
+    process.exit();
+  }
+
+  async env(source = false) {
+    const env = await this._get_env();
+
     if(source) {
       this._publish_env(env);
       process.exit();
     }
+
     return env;
   }
 
-
-  async _read(mount, secret_path) {
+  async _vault_read(mount, secret_path) {
     let remote_url = `${trim(this.VAULT_ADDR, '/')}/v1/${mount}/data/${trim(secret_path, '/')}`;
     let query = {...url.parse(remote_url), headers : {'x-vault-token' : this.VAULT_TOKEN}, expect : 200};
     let res = await request(query);
     return get(JSON.parse(String(await drain(res))), 'data.data');
   }
 
+
   async _login_vault_ssh({path = 'ssh', role}) {
     logger.info("Trying to auth as '%s'", role);
-
 
     let agent = new OpenSSHAgent(process.env.SSH_AUTH_SOCK);
     let keys = await promiser(chain => agent.getIdentities(chain));
