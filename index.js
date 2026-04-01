@@ -7,6 +7,7 @@ const path  = require('path');
 const url   = require('url');
 const {spawn} = require('child_process');
 const passthru = require('nyks/child_process/passthru');
+const wait     = require('nyks/child_process/wait');
 
 const {parse} = require('yaml');
 const semver     = require('semver');
@@ -163,7 +164,14 @@ class vvauth {
       let child = spawn('ssh-agent-crypt', ["-decrypt", identity]);
 
       child.stdin.end(fs.readFileSync(path));
-      const result = JSON.parse(await drain(child.stdout));
+      child.stderr.pipe(process.stderr);
+
+      const [exit, body] = await Promise.all([wait(child, false), drain(child.stdout)]);
+      if(exit !== 0) {
+        console.error("Could not expand armored %s using %s", path, identity);
+        process.exit();
+      }
+      const result = JSON.parse(body);
       secrets = {...secrets, ...result};
     }
 
