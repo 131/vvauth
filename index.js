@@ -113,12 +113,12 @@ class vvauth {
 
 
   async set(k, v) {
-    let {entity_id, identity : {metadata}} = await this._vault_get_profile();
-    if(!metadata)
-      metadata = {};
-    let key_name = `env_${k.toUpperCase()}`;
-    metadata[key_name] = v;
-    await this._update_identity(this.VAULT_TOKEN, entity_id, {metadata});
+    let {profile, database} = await this._vault_get_profile();
+    if(!profile.VAUTH_USER_LOGIN)
+      throw "Could not resolve VAUTH_USER_LOGIN from vault identity";
+
+    database[k.toUpperCase()] = v;
+    await this._vault_write(`private/${profile.VAUTH_USER_LOGIN}`, '.vauth_database', database);
   }
 
   async unset(k) {
@@ -126,8 +126,8 @@ class vvauth {
   }
 
   async show() {
-    let {profile} = await this._vault_get_profile();
-    return profile;
+    let {profile, database} = await this._vault_get_profile();
+    return {...database, ...profile};
   }
 
   async _vault_get_profile() {
@@ -138,22 +138,18 @@ class vvauth {
 
     let {entity_id} = await this._lookup_token(this.VAULT_TOKEN);
     let identity = await this._lookup_identity(this.VAULT_TOKEN, entity_id);
-    let profile = {};
-    for(let alias of identity.aliases) {
-      for(let [k, v] of Object.entries(alias.custom_metadata || {})) {
-        if(k.startsWith('env_'))
-          profile[k.substr(4)] = v;
-      }
-    }
-    for(let [k, v] of Object.entries(identity.metadata || {})) {
-      if(k.startsWith('env_'))
-        profile[k.substr(4)] = v;
-    }
-    return {entity_id, identity, profile};
+    let profile = {...(identity.metadata || {})};
+    let database = {};
+
+    if(profile.VAUTH_USER_LOGIN)
+      database = await this._vault_read(`private/${profile.VAUTH_USER_LOGIN}`, '.vauth_database', true);
+
+    return {entity_id, identity, profile, database};
   }
 
   async _get_env() {
-    let {profile} = await this._vault_get_profile();
+    let {profile, database} = await this._vault_get_profile();
+    profile = {...database, ...profile};
 
     let env = {VAULT_TOKEN : this.VAULT_TOKEN, VAULT_ADDR : this.VAULT_ADDR}, secrets = {},
       {git, map = {}, paths, path : mount = "secrets"} = this.rc.env || {};
@@ -219,11 +215,31 @@ class vvauth {
     return env;
   }
 
-  async _vault_read(mount, secret_path) {
+  async _vault_read(mount, secret_path, optional = false) {
     let remote_url = `${trim(this.VAULT_ADDR, '/')}/v1/${mount}/data/${trim(secret_path, '/')}`;
-    let query = {...url.parse(remote_url), headers : {'x-vault-token' : this.VAULT_TOKEN}, expect : 200};
+    let query = {...url.parse(remote_url), headers : {'x-vault-token' : this.VAULT_TOKEN}};
     let res = await request(query);
-    return get(JSON.parse(String(await drain(res))), 'data.data');
+    let body = String(await drain(res));
+
+    if(optional && res.statusCode == 404)
+      return {};
+
+    if(res.statusCode != 200)
+      throw `Could not read vault secret '${mount}/${trim(secret_path, '/')}' : ${body}`;
+
+    return get(JSON.parse(body), 'data.data');
+  }
+
+  async _vault_write(mount, secret_path, data) {
+    let remote_url = `${trim(this.VAULT_ADDR, '/')}/v1/${mount}/data/${trim(secret_path, '/')}`;
+    let query = {...url.parse(remote_url), headers : {'x-vault-token' : this.VAULT_TOKEN}, json : true};
+    let res = await request(query, {data});
+    let body = String(await drain(res));
+
+    if(res.statusCode != 200)
+      throw `Could not write vault secret '${mount}/${trim(secret_path, '/')}' : ${body}`;
+
+    return body ? JSON.parse(body) : {};
   }
 
 

@@ -18,7 +18,7 @@ vauth configuration file is a simple yaml file with a specific macro expansion s
 The configuration file should abide the following schema
 
 ### configuration macro expansion set
-* $${profile.XXX} expand to vault entity metadata/custom_metadata vars
+* $${profile.XXX} expand to vault entity metadata and user `.vauth_database` vars
 * $${env.XXX} expand to local environement vars
 * $${secrets.XXX} expand to remote scrapped secrets (see the env.paths)
 
