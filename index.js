@@ -48,7 +48,7 @@ class vvauth {
       for(let [module_name, module_version]  of Object.entries(dependencies)) {
 
         let {version} = require(require.resolve(`${module_name}/package.json`, {
-          paths : [path.resolve('node_modules')]
+          paths : ['.', ...require.main.paths]
         }));
 
         if(!semver.satisfies(version, module_version))
