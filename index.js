@@ -5,7 +5,7 @@ const os   = require('os');
 const fs    = require('fs');
 const path  = require('path');
 const url   = require('url');
-const {spawn} = require('child_process');
+const {spawn, execFileSync} = require('child_process');
 const passthru = require('nyks/child_process/passthru');
 const wait     = require('nyks/child_process/wait');
 
@@ -61,7 +61,28 @@ class vvauth {
     let vauth_rc = VAUTH_RC.filter(path => path && fs.existsSync(path))[0];
     if(vauth_rc) {
       let body = fs.readFileSync(vauth_rc, 'utf8');
-      this.rc = walk(parse(body), v =>  replaceEnv(v, {env : process.env}));
+      let rc = parse(body);
+      let env = process.env;
+
+      if(get(rc, 'env.gitlab') && !env.CI) {
+        try {
+          let remote_url = String(execFileSync('git', ['remote', 'get-url', 'origin'], {cwd : path.dirname(vauth_rc), stdio : ['ignore', 'pipe', 'ignore']})).trim();
+          let match = remote_url.match(/^[^@]+@[^:]+:(.+)$/);
+          let CI_PROJECT_PATH = match ? match[1] : trim(new URL(remote_url).pathname, '/');
+          CI_PROJECT_PATH = trim(CI_PROJECT_PATH, '/').replace(/\.git$/, '');
+
+          if(CI_PROJECT_PATH) {
+            let parts = CI_PROJECT_PATH.split('/');
+            let CI_PROJECT_NAME = parts.pop();
+            let CI_PROJECT_NAMESPACE = parts.join('/');
+            let CI_PROJECT_PATH_SLUG = String(CI_PROJECT_PATH).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+
+            env = {...env, CI_PROJECT_PATH, CI_PROJECT_NAME, CI_PROJECT_NAMESPACE, CI_PROJECT_PATH_SLUG};
+          }
+        } catch(err) {}
+      }
+
+      this.rc = walk(rc, v =>  replaceEnv(v, {env}));
     }
 
     this.VAULT_ADDR = this.rc.vault_addr;
