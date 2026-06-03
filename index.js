@@ -85,13 +85,15 @@ class vvauth {
       this.rc = walk(rc, v =>  replaceEnv(v, {env}));
     }
 
-    this.VAULT_ADDR = this.rc.vault_addr;
 
-    if(!this.VAULT_ADDR)
-      throw `Invalid vault remote`;
-
+    this.VAULT_ADDR = this.rc.vault_addr; //might be null
     this.VAULT_TOKEN = process.env.VAULT_TOKEN;
-    console.error("vauth bound to '%s'", this.VAULT_ADDR);
+
+    if(this.VAULT_ADDR)
+      console.error("vauth bound to '%s'", this.VAULT_ADDR);
+    else
+      console.error("Not bound to any vault");
+
   }
 
   async run() {
@@ -172,8 +174,14 @@ class vvauth {
     let {profile, database} = await this._vault_get_profile();
     profile = {...database, ...profile};
 
-    let env = {VAULT_TOKEN : this.VAULT_TOKEN, VAULT_ADDR : this.VAULT_ADDR}, secrets = {},
+    let env = {}, secrets = {},
       {git, map = {}, paths, path : mount = "secrets"} = this.rc.env || {};
+
+    if(this.VAULT_TOKEN)
+      env.VAULT_TOKEN = this.VAULT_TOKEN;
+    if(this.VAULT_ADDR)
+      env.VAULT_TOKEN = this.VAULT_ADDR;
+
 
     let {'ssh-agent-crypt' : agent } = this.rc;
     if(agent) {
