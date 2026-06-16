@@ -180,7 +180,7 @@ class vvauth {
     if(this.VAULT_TOKEN)
       env.VAULT_TOKEN = this.VAULT_TOKEN;
     if(this.VAULT_ADDR)
-      env.VAULT_TOKEN = this.VAULT_ADDR;
+      env.VAULT_ADDR = this.VAULT_ADDR;
 
 
     let {'ssh-agent-crypt' : agent } = this.rc;
