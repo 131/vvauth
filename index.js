@@ -86,7 +86,7 @@ class vvauth {
     }
 
 
-    this.VAULT_ADDR = this.rc.vault_addr; //might be null
+    this.VAULT_ADDR = this.rc.vault_addr || process.env.VAULT_ADDR; //might be null
     this.VAULT_TOKEN = process.env.VAULT_TOKEN;
 
     if(this.VAULT_ADDR)
