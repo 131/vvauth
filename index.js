@@ -372,7 +372,8 @@ const shellEscape = (arg) =>  {
 //ensure module is called directly, i.e. not required
 if(module.parent === null) {
   let cmd = args.shift();
-  require('cnyks/lib/bundle')(vvauth, null, cmd ? [`--ir://run=${cmd}`, '--ir://raw'] : []);
+  const output = process.argv.includes('--ir://json') ? '--ir://json' : '--ir://raw';
+  require('cnyks/lib/bundle')(vvauth, null, cmd ? [`--ir://run=${cmd}`, output] : []);
 }
 
 module.exports = vvauth;

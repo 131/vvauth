@@ -49,3 +49,14 @@ env:
 # Credits
 * [Francois Leurent](https://github.com/131)
 
+
+# Machine-readable environment
+
+`vauth env --ir://json` resolves the same environment as `vauth env --source`
+and asks the `cnyks` runner to write one JSON object to stdout. Diagnostic
+messages remain on stderr, so a caller can parse stdout directly.
+
+```bash
+vauth env --ir://json
+```
+
