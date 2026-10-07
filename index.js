@@ -23,7 +23,7 @@ const promiser   = require('nyks/function/promiser');
 const {args} = require('nyks/process/parseArgs')();
 
 
-const {OpenSSHAgent} = require('ssh2/lib/agent');
+const {createAgent} = require('ssh2/lib/agent');
 const debug = require('debug');
 
 const logger  = {
@@ -48,7 +48,7 @@ class vvauth {
       for(let [module_name, module_version]  of Object.entries(dependencies)) {
 
         let {version} = require(require.resolve(`${module_name}/package.json`, {
-          paths : ['.', ...require.main.paths]
+          paths : ['.', ...(require.main && require.main.paths || module.paths)]
         }));
 
         if(!semver.satisfies(version, module_version))
@@ -106,8 +106,9 @@ class vvauth {
   async connect() {
     let VAULT_TOKEN, {rc : {ssh_auth, jwt_auth}} = this;
 
-    if(!VAULT_TOKEN && ssh_auth && process.env.SSH_AUTH_SOCK)
-      VAULT_TOKEN = await this._login_vault_ssh({...ssh_auth});
+    const agent_path = process.env.SSH_AUTH_SOCK || (process.platform === 'win32' ? 'pageant' : null);
+    if(!VAULT_TOKEN && ssh_auth && agent_path)
+      VAULT_TOKEN = await this._login_vault_ssh({...ssh_auth}, agent_path);
 
     if(!VAULT_TOKEN && jwt_auth && jwt_auth.jwt) {
       let {path, jwt, role} = jwt_auth, payload = {jwt, role};
@@ -272,10 +273,10 @@ class vvauth {
   }
 
 
-  async _login_vault_ssh({path = 'ssh', role}) {
+  async _login_vault_ssh({path = 'ssh', role}, agent_path = process.env.SSH_AUTH_SOCK) {
     logger.info("Trying to auth as '%s'", role);
 
-    let agent = new OpenSSHAgent(process.env.SSH_AUTH_SOCK);
+    let agent = createAgent(agent_path);
     let keys = await promiser(chain => agent.getIdentities(chain));
 
 
