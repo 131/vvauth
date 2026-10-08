@@ -6,6 +6,7 @@ const fs    = require('fs');
 const path  = require('path');
 const url   = require('url');
 const {createHash} = require('crypto');
+const {encrypt, decrypt} = require('ssh-agent-crypt');
 const {spawn, execFileSync} = require('child_process');
 const passthru = require('nyks/child_process/passthru');
 const wait     = require('nyks/child_process/wait');
@@ -89,6 +90,9 @@ class vvauth {
     }
 
 
+    if(!process.env.SSH_AUTH_SOCK)
+      this.rc.token_cache = false;
+
     this.VAULT_ADDR = this.rc.vault_addr || process.env.VAULT_ADDR; //might be null
     this.VAULT_TOKEN = process.env.VAULT_TOKEN;
 
@@ -112,40 +116,38 @@ class vvauth {
   }
 
   _token_cache_file() {
-    return path.join(os.homedir(), '.vauth', 'token.json');
+    return path.join(os.homedir(), '.vauth', 'tokens', this._token_cache_key() + '.creds');
   }
 
-  _read_token_cache() {
+  async _read_token_cache() {
     if(this.rc.token_cache === false)
-      return {version : 1, tokens : {}};
+      return;
     try {
-      const cache = JSON.parse(fs.readFileSync(this._token_cache_file(), 'utf8'));
-      if(cache.version === 1 && cache.tokens && typeof cache.tokens === 'object' && !Array.isArray(cache.tokens))
-        return cache;
+      const armor = fs.readFileSync(this._token_cache_file(), 'utf8');
+      return JSON.parse(await decrypt(armor));
     } catch(err) {}
-    return {version : 1, tokens : {}};
   }
 
-  _save_cached_token(token, metadata) {
+  async _save_cached_token(token, metadata) {
     if(this.rc.token_cache === false)
       return;
     const ttl = metadata.ttl === undefined ? metadata.lease_duration : metadata.ttl;
     const file = this._token_cache_file();
     const temporary = file + '.next';
     try {
-      const cache = this._read_token_cache();
-      const key = this._token_cache_key();
       const {lease_duration} = metadata;
-      cache.tokens[key] = {
+      const cache = {
         token, lease_duration, renewable : metadata.renewable === true,
         expires_at : ttl === 0 ? null : Date.now() + ttl * 1000,
       };
       fs.mkdirSync(path.dirname(file), {recursive : true, mode : 0o700});
-      fs.writeFileSync(temporary, JSON.stringify(cache, null, 2) + '\n', {mode : 0o600});
+      const identity = process.env.VAUTH_USER_IDENTITY || process.env.VAUTH_USER_MAIL;
+      const armor = await encrypt(JSON.stringify(cache), identity);
+      fs.writeFileSync(temporary, armor, {mode : 0o600});
       fs.renameSync(temporary, file);
     } catch(err) {
       // Cache failures must not prevent authentication or expose credentials.
-      logger.error('Could not write token cache (%s)', err.code || 'invalid cache');
+      console.error('Could not encrypt/write token cache; token not persisted');
     } finally {
       try { fs.unlinkSync(temporary); } catch(err) {}
     }
@@ -162,7 +164,7 @@ class vvauth {
       return this.VAULT_TOKEN;
     this._connected = false;
 
-    const cached = this._read_token_cache().tokens[this._token_cache_key()];
+    const cached = await this._read_token_cache();
     let token = this.VAULT_TOKEN || (cached && cached.token);
     const had_token = !!token;
     let metadata, operation = 'reused';
@@ -213,7 +215,7 @@ class vvauth {
 
     if(token) {
       if(operation !== 'reused' || !cached || cached.token !== token)
-        this._save_cached_token(token, metadata);
+        await this._save_cached_token(token, metadata);
       this._token_status(operation, metadata);
     }
     this.VAULT_TOKEN = token;
@@ -445,7 +447,7 @@ class vvauth {
     let response = JSON.parse(await drain(res)).data;
     if(!Number.isFinite(response.ttl) || response.ttl < 0)
       throw new Error('Invalid Vault token TTL');
-    const cached = this._read_token_cache().tokens[this._token_cache_key()];
+    const cached = await this._read_token_cache();
     if(cached && cached.token === token)
       response.lease_duration = cached.lease_duration;
     else

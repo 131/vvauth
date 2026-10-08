@@ -63,9 +63,12 @@ vauth env --ir://json
 
 # Token cache
 
-Tokens are cached in `~/.vauth/token.json`, isolated by Vault and
+Tokens are cached in `~/.vauth/tokens/<session>.creds`, isolated by Vault and
 authentication. Tokens are reused, renewed within their lease’s final third, or
 replaced when expired. Existing `VAULT_TOKEN` takes precedence over cached tokens.
+
+Each session file is armored using `ssh-agent-crypt` and your SSH agent’s first
+key. Without an SSH agent, disk caching is disabled.
 
 Set `token_cache: false` in `.vauthrc` to disable disk cache reads and writes.
 
