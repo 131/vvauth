@@ -7,6 +7,7 @@
     "vauth": "./index.js"
   },
   "scripts": {
+    "test": "node --test test/token-cache.js",
     "eslint": "eslint ."
   },
   "author": "",

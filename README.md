@@ -60,3 +60,15 @@ messages remain on stderr, so a caller can parse stdout directly.
 vauth env --ir://json
 ```
 
+
+# Token cache
+
+Tokens are cached in `~/.vauth/token.json`, isolated by Vault and
+authentication. Tokens are reused, renewed within their lease’s final third, or
+replaced when expired. Existing `VAULT_TOKEN` takes precedence over cached tokens.
+
+Set `token_cache: false` in `.vauthrc` to disable disk cache reads and writes.
+
+## Force reauthentication
+
+`venv --renew` forces authentication, generates and caches a new token.

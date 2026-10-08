@@ -19,4 +19,5 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
       - run: npm install
       - run: npm run eslint
+      - run: npm test
       - run: npm publish
