@@ -256,13 +256,15 @@ test('an unwritable cache does not prevent login', async t => {
   assert.equal(await client().connect(), 'fresh-token');
 });
 
-test('an invalid token without an auth method fails rather than exporting undefined', async t => {
+test('without an auth method inherited tokens and caches are ignored', async t => {
   const {client, seed} = await fixture(t, {lookup_status : 403});
   const instance = client();
   instance.rc = {};
   await seed(instance);
   instance.VAULT_TOKEN = 'uncached-token';
-  await assert.rejects(instance.connect(), /no authentication method/);
+  instance._read_token_cache = async () => { throw new Error('No auth: no cache lookup'); };
+  assert.equal(await instance.connect(), undefined);
+  assert.equal(instance.VAULT_TOKEN, undefined);
 });
 
 test('--renew ignores both environment and cached tokens and saves a new token', async t => {
@@ -294,11 +296,11 @@ test('each successive --renew call forces a new login', async t => {
   assert.equal(requests.length, 2);
 });
 
-test('--renew without an authentication method fails even with no cached token', async t => {
+test('--renew without an authentication method remains a no-op', async t => {
   const {client} = await fixture(t);
   const instance = client();
   instance.rc = {};
-  await assert.rejects(instance.connect(true), /no authentication method/);
+  assert.equal(await instance.connect(true), undefined);
 });
 
 for(const flag of ['renew']) {
@@ -734,5 +736,59 @@ for(const selected of ['identity', 'mail', 'default']) {
       delete process.env.VAUTH_USER_IDENTITY;
       delete process.env.VAUTH_USER_MAIL;
     }
+  });
+}
+
+for(const explicit of [false, true]) {
+  test(`.creds uses the JS module without a CLI (explicit identity=${explicit})`, async t => {
+    const {client, file} = await fixture(t);
+    const instance = client();
+    const credentials = path.join(path.dirname(path.dirname(path.dirname(file))), '.creds');
+    const identity = spawnSync('ssh-add', ['-l'], {encoding : 'utf8'}).stdout.split(/\s+/)[1];
+    fs.writeFileSync(credentials, await encrypt(JSON.stringify({TEST_SECRET : 'module-secret'})));
+    instance.rc['ssh-agent-crypt'] = {path : credentials};
+    if(explicit)
+      instance.rc['ssh-agent-crypt'].identity = identity;
+    instance.rc.env = {map : {EXPORTED_SECRET : '$${secrets.TEST_SECRET}'}};
+    instance._vault_get_profile = async () => ({profile : {}, database : {}});
+    const previousPath = process.env.PATH;
+    try {
+      process.env.PATH = path.dirname(credentials);
+      const env = await instance.env();
+      assert.equal(env.EXPORTED_SECRET, 'module-secret');
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  });
+}
+
+test('.creds decryption failures reject instead of exiting successfully', async t => {
+  const {client, file} = await fixture(t);
+  const instance = client();
+  const credentials = path.join(path.dirname(path.dirname(path.dirname(file))), '.creds');
+  fs.writeFileSync(credentials, 'not an armored payload');
+  instance.rc['ssh-agent-crypt'] = {path : credentials};
+  instance._vault_get_profile = async () => ({profile : {}, database : {}});
+  await assert.rejects(instance.env(), /Unsupported format header/);
+});
+
+for(const inherited of ['', 'inherited-token']) {
+  test(`local .creds environment works offline with inherited token=${!!inherited}`, async t => {
+    const {client, file, requests} = await fixture(t, {lookup_status : 503});
+    const instance = client();
+    const credentials = path.join(path.dirname(path.dirname(path.dirname(file))), '.creds');
+    fs.writeFileSync(credentials, await encrypt(JSON.stringify({ARM_CLIENT_SECRET : 'local-secret', VAULT_TOKEN : 'local-token'})));
+    instance.rc = {
+      'ssh-agent-crypt' : {path : credentials},
+      env : {map : {ARM_CLIENT_SECRET : '$${secrets.ARM_CLIENT_SECRET}', VAULT_TOKEN : '$${secrets.VAULT_TOKEN}'}},
+    };
+    instance.VAULT_TOKEN = inherited;
+    instance._lookup_token = async () => { throw new Error('Local environment must not contact Vault'); };
+    instance._read_token_cache = async () => { throw new Error('Local environment must not read the token cache'); };
+    const env = await instance.env();
+    assert.equal(env.ARM_CLIENT_SECRET, 'local-secret');
+    assert.equal(env.VAULT_TOKEN, 'local-token');
+    assert.equal(env.VAULT_ADDR, instance.VAULT_ADDR);
+    assert.deepEqual(requests, []);
   });
 }

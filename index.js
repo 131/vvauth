@@ -9,7 +9,6 @@ const {createHash} = require('crypto');
 const {encrypt, decrypt} = require('ssh-agent-crypt');
 const {spawn, execFileSync} = require('child_process');
 const passthru = require('nyks/child_process/passthru');
-const wait     = require('nyks/child_process/wait');
 const boolPrompt = require('cnyks/prompt/bool');
 
 const {parse} = require('yaml');
@@ -160,6 +159,11 @@ class vvauth {
   }
 
   async connect(renew = false) {
+    const {ssh_auth, jwt_auth} = this.rc;
+    if(!ssh_auth && !jwt_auth) {
+      this.VAULT_TOKEN = undefined;
+      return;
+    }
     if(this._connected && !renew)
       return this.VAULT_TOKEN;
     this._connected = false;
@@ -199,7 +203,6 @@ class vvauth {
     }
 
     if(!token) {
-      const {ssh_auth, jwt_auth} = this.rc;
       const agent_path = process.env.SSH_AUTH_SOCK || (process.platform === 'win32' ? 'pageant' : null);
       if(ssh_auth && agent_path) {
         metadata = await this._login_vault_ssh({...ssh_auth}, agent_path);
@@ -303,16 +306,7 @@ class vvauth {
     let {'ssh-agent-crypt' : agent } = this.rc;
     if(agent) {
       const {path, identity} = agent;
-      let child = spawn('ssh-agent-crypt', ["-decrypt", identity]);
-
-      child.stdin.end(fs.readFileSync(path));
-      child.stderr.pipe(process.stderr);
-
-      const [exit, body] = await Promise.all([wait(child, false), drain(child.stdout)]);
-      if(exit !== 0) {
-        console.error("Could not expand armored %s using %s", path, identity);
-        process.exit();
-      }
+      const body = await decrypt(fs.readFileSync(path), identity);
       const result = JSON.parse(body);
       secrets = {...secrets, ...result};
     }
