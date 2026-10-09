@@ -792,3 +792,27 @@ for(const inherited of ['', 'inherited-token']) {
     assert.deepEqual(requests, []);
   });
 }
+
+test('Windows keeps cache enabled and selects Pageant without SSH_AUTH_SOCK', async t => {
+  const {client, file} = await fixture(t);
+  const home = path.dirname(path.dirname(path.dirname(file)));
+  const rc = path.join(home, 'foundry.vauthrc');
+  fs.writeFileSync(rc, JSON.stringify({vault_addr : client().VAULT_ADDR, ssh_auth : {role : 'windows-role'}}));
+  const module_path = path.resolve(__dirname, '..', 'index.js');
+  const script = `const Vauth = require(${JSON.stringify(module_path)});
+    Object.defineProperty(process, 'platform', {value: 'win32'});
+    const instance = new Vauth();
+    const result = {cacheDisabled: instance.rc.token_cache === false, role: instance.rc.ssh_auth.role};
+    instance._read_token_cache = async () => undefined;
+    instance._save_cached_token = async () => {};
+    instance._login_vault_ssh = async (auth, agent) => {
+      result.agent = agent;
+      return {client_token: 'windows-test-token', lease_duration: 86400, renewable: true};
+    };
+    instance.connect().then(() => process.stdout.write(JSON.stringify(result))).catch(() => process.exit(1));`;
+  const output = await exec(process.execPath, ['-e', script], {
+    cwd : home,
+    env : {...process.env, VAUTHRC : rc, VAULT_TOKEN : '', SSH_AUTH_SOCK : ''},
+  });
+  assert.deepEqual(JSON.parse(output.stdout), {cacheDisabled : false, role : 'windows-role', agent : 'pageant'});
+});

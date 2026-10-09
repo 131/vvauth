@@ -89,7 +89,7 @@ class vvauth {
     }
 
 
-    if(!process.env.SSH_AUTH_SOCK)
+    if(!process.env.SSH_AUTH_SOCK && process.platform !== 'win32')
       this.rc.token_cache = false;
 
     this.VAULT_ADDR = this.rc.vault_addr || process.env.VAULT_ADDR; //might be null
