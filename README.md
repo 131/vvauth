@@ -73,9 +73,10 @@ env:
 
 # Machine-readable environment
 
-`vauth env --ir://json` resolves the same environment as `vauth env --source`
-and asks the `cnyks` runner to write one JSON object to stdout. Diagnostic
-messages remain on stderr, so a caller can parse stdout directly.
+`vauth env --ir://json` writes the resolved environment as one JSON object on
+stdout; diagnostics stay on stderr, so a caller can parse stdout directly.
+Every command, flag, output and the Node/Go module signatures are in
+[API_and_tests.md](API_and_tests.md).
 
 ```bash
 vauth env --ir://json
