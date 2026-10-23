@@ -1,0 +1,31 @@
+version: 2
+
+project_name: vauth
+
+builds:
+  - id: linux
+    main: ./cmd/vauth
+    goos: [linux]
+    goarch: [amd64]
+    flags: [-trimpath]
+    ldflags: ['-s -w -X main.version={{ .Tag }}']
+  - id: windows
+    main: ./cmd/vauth
+    goos: [windows]
+    goarch: [amd64]
+    flags: [-trimpath]
+    ldflags: ['-s -w -X main.version={{ .Tag }}']
+    hooks:
+      post: .gh-actions/sign-binaries/sign {{ .Path }}
+
+archives:
+  - formats: [binary]
+    name_template: '{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}'
+
+checksum:
+  name_template: SHA256SUMS
+
+changelog:
+  filters:
+    exclude:
+      - '^v[0-9]+\.[0-9]+\.[0-9]+$'
