@@ -29,6 +29,21 @@ Binaries are static, signed on Windows, with `SHA256SUMS` on every
 build version. On Windows, the SSH agent is `SSH_AUTH_SOCK` when set, else
 Pageant (≥ 0.75, named pipe autodiscovery), else the OpenSSH agent pipe.
 
+## The `venv` shell function
+
+A program cannot change the environment of the shell that started it, so the
+`VAULT_TOKEN`, credentials and `env.map` variables that `vauth` resolves have
+to be *sourced*. `vauth install` appends this one-liner to `~/.bashrc`:
+
+```bash
+function venv() { source <(/usr/bin/env vauth env --source "$@"); }
+```
+
+`venv` then loads the resolved environment into the current shell (`venv
+--renew` forces a fresh token); the exported names are echoed to stderr with
+their values redacted. In scripts or CI, without a shell to source into, use
+`vauth run <command>`, `vauth env --ir://json` or `vauth dotenv` instead.
+
 
 # Vauth configuration
 ## Vauth configuration file location
