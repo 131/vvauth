@@ -667,3 +667,18 @@ func sha256Hex(value string) string {
 	digest := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(digest[:])
 }
+
+func TestEnvMapKeysMustBeVariableNames(t *testing.T) {
+	f := newFixture(t, fixtureOptions{})
+	v := f.client()
+	v.RC.Env = &EnvConfig{}
+	v.RC.Env.Map.Set("SAFE; printf INJECTED >&2; #", "dummy")
+	if _, err := v.Env(false); err == nil || !strings.Contains(err.Error(), "Invalid environment variable name") {
+		t.Fatalf("hostile env.map key accepted: %v", err)
+	}
+	v.RC.Env = &EnvConfig{}
+	v.RC.Env.Map.Set("TF_HTTP_USERNAME", "$${profile.VAUTH_USER_LOGIN}")
+	if _, err := v.Env(false); err != nil {
+		t.Fatal(err)
+	}
+}

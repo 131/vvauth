@@ -818,3 +818,12 @@ test('Windows keeps cache enabled and selects Pageant without SSH_AUTH_SOCK', as
   });
   assert.deepEqual(JSON.parse(output.stdout), {cacheDisabled : false, role : 'windows-role', agent : 'pageant'});
 });
+
+test('env.map keys must be environment variable names (they reach `export KEY=` unescaped)', async t => {
+  const {client} = await fixture(t);
+  const instance = client();
+  instance.rc = {...instance.rc, env : {map : {'SAFE; printf INJECTED >&2; #' : 'dummy'}}};
+  await assert.rejects(instance.env(), /Invalid environment variable name/);
+  instance.rc = {...instance.rc, env : {map : {TF_HTTP_USERNAME : '$${profile.VAUTH_USER_LOGIN}'}}};
+  assert.ok('TF_HTTP_USERNAME' in await instance.env());
+});

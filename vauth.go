@@ -418,10 +418,17 @@ func (v *Vauth) Env(renew bool) (*OrderedMap, error) {
 	}
 	dict := Lookup{"env": v.Environ, "profile": merged, "secrets": secrets}
 	for _, key := range mapping.Keys {
+		if !envName.MatchString(key) {
+			return nil, fmt.Errorf("Invalid environment variable name '%s' in env.map", key)
+		}
 		env.Set(key, ReplaceEnv(mapping.Values[key], dict))
 	}
 	return env, nil
 }
+
+// envName is the only shape of key that reaches `export KEY=...` unescaped;
+// .vauthrc may come from an untrusted working directory.
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Login connects, and with source publishes VAULT_TOKEN as shell exports.
 func (v *Vauth) Login(source, renew bool) error {

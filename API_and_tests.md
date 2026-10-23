@@ -10,7 +10,8 @@ expose the same `vauth` command; everything below holds for both.
 vauth <command> [positional...] [--flag[=value]] [--ir://json]
 ```
 
-Flags may replace positionals (`vauth set GITLAB_TOKEN x` ≡
+`env.map` names must match `^[A-Za-z_][A-Za-z0-9_]*$`; any other key is an
+error, since names reach `export KEY=` unescaped. Flags may replace positionals (`vauth set GITLAB_TOKEN x` ≡
 `vauth set --k=GITLAB_TOKEN --v=x`). `--flag` alone means `true`; `--flag=`,
 `--flag=false` and `--flag=0` mean `false`. `--` ends flag parsing.
 

@@ -327,8 +327,12 @@ class vvauth {
         secrets = {...secrets, ...data};
       }
     }
-    for(let [k, v] of Object.entries(map))
+    for(let [k, v] of Object.entries(map)) {
+      // the key reaches `export KEY=...` unescaped; .vauthrc may come from an untrusted working directory
+      if(!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
+        throw new Error(`Invalid environment variable name '${k}' in env.map`);
       env[k] = replaceEnv(v, {env : process.env, profile, secrets});
+    }
 
     return env;
   }
