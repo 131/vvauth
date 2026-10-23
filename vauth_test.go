@@ -45,6 +45,11 @@ func TestMain(m *testing.M) {
 	if out, err := add.CombinedOutput(); err != nil {
 		panic(fmt.Sprintf("ssh-add: %v %s", err, out))
 	}
+	// ssh-agent-crypt falls back to these for key selection; the real user's
+	// identity is not in the throwaway agent.
+	for _, name := range []string{"SSH_AGENT_CRYPT_KEY", "VAUTH_USER_IDENTITY", "VAUTH_USER_MAIL"} {
+		os.Unsetenv(name)
+	}
 	code := m.Run()
 	exec.Command("kill", pid).Run()
 	os.RemoveAll(directory)

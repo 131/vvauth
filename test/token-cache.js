@@ -18,10 +18,12 @@ let agentDirectory, agentPid;
 const previousSocket = process.env.SSH_AUTH_SOCK;
 const previousIdentity = process.env.VAUTH_USER_IDENTITY;
 const previousMail = process.env.VAUTH_USER_MAIL;
+const previousCryptKey = process.env.SSH_AGENT_CRYPT_KEY;
 
 before(() => {
   delete process.env.VAUTH_USER_IDENTITY;
   delete process.env.VAUTH_USER_MAIL;
+  delete process.env.SSH_AGENT_CRYPT_KEY;
   agentDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'vvauth-agent-'));
   const key = path.join(agentDirectory, 'key');
   assert.equal(spawnSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', key]).status, 0);
@@ -33,7 +35,7 @@ before(() => {
 });
 
 after(() => {
-  for(const [name, value] of [['VAUTH_USER_IDENTITY', previousIdentity], ['VAUTH_USER_MAIL', previousMail]]) {
+  for(const [name, value] of [['VAUTH_USER_IDENTITY', previousIdentity], ['VAUTH_USER_MAIL', previousMail], ['SSH_AGENT_CRYPT_KEY', previousCryptKey]]) {
     if(value === undefined)
       delete process.env[name];
     else
@@ -627,7 +629,7 @@ test('disk cache contains only armor, interoperable with ssh-agent-crypt CLI', a
   const instance = client();
   await instance.connect();
   const armor = fs.readFileSync(file, 'utf8');
-  assert.match(armor, /^ssh-agent-crypt:v2:/);
+  assert.match(armor, /^ssh-agent-crypt:v3:/);
   assert.ok(!armor.includes('fresh-token'));
   assert.ok(!armor.includes('lease_duration'));
   assert.ok(!armor.includes('test-jwt'));
@@ -644,7 +646,7 @@ test('a plaintext cache is not accepted as a token cache', async t => {
   fs.writeFileSync(file, JSON.stringify({token : 'plaintext-token', lease_duration : 86400, expires_at : Date.now() + 86400000}));
   assert.equal(await instance.connect(), 'fresh-token');
   assert.deepEqual(requests.map(req => req.path), ['/v1/auth/jwt/login']);
-  assert.match(fs.readFileSync(file, 'utf8'), /^ssh-agent-crypt:v2:/);
+  assert.match(fs.readFileSync(file, 'utf8'), /^ssh-agent-crypt:v3:/);
 });
 
 test('without an SSH agent cache is skipped silently', async t => {
@@ -727,7 +729,7 @@ for(const selected of ['identity', 'mail', 'default']) {
       assert.equal(await instance.connect(), 'fresh-token');
       const fingerprint = spawnSync('ssh-keygen', ['-lf', key + '.pub'], {encoding : 'utf8'}).stdout.split(/\s+/)[1];
       const armor = fs.readFileSync(file, 'utf8');
-      assert.equal(armor.startsWith(`ssh-agent-crypt:v2:${fingerprint}.`), selected !== 'default');
+      assert.equal(armor.startsWith(`ssh-agent-crypt:v3:${fingerprint}.`), selected !== 'default');
       delete process.env.VAUTH_USER_IDENTITY;
       delete process.env.VAUTH_USER_MAIL;
       assert.equal(await client().connect(), 'fresh-token');

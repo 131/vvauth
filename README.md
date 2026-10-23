@@ -5,6 +5,31 @@ This projects helps you log yourself in a HCL vault and retrieve VAULT_TOKEN thr
 * ssh (with agent) login
 
 
+# Installation
+
+```bash
+# node
+npm install -g vvauth
+
+# go
+go install github.com/131/vvauth/v2/cmd/vauth@latest
+
+# static binary, linux
+wget -O vauth https://github.com/131/vvauth/releases/latest/download/vauth-linux-amd64
+chmod +x vauth
+
+# static binary, windows (curl.exe ships with every supported Windows, cmd or PowerShell)
+curl.exe -fsSL -o vauth.exe https://github.com/131/vvauth/releases/latest/download/vauth-windows-amd64.exe
+```
+
+The [npm](https://www.npmjs.com/package/vvauth) module and the Go module ship
+the same `vauth` command, flags and `.vauthrc`, and share the token cache.
+Binaries are static, signed on Windows, with `SHA256SUMS` on every
+[release](https://github.com/131/vvauth/releases); `vauth version` prints the
+build version. On Windows, the SSH agent is `SSH_AUTH_SOCK` when set, else
+Pageant (≥ 0.75, named pipe autodiscovery), else the OpenSSH agent pipe.
+
+
 # Vauth configuration
 ## Vauth configuration file location
 vauth configuration file lies on a `.vauthrc` file (this name can be controlled by the VAUTHRC env var).
@@ -46,27 +71,6 @@ env:
 ```
 
 
-# Installation
-
-```bash
-npm install -g vvauth                               # node
-go install github.com/131/vvauth/v2/cmd/vauth@latest  # go
-```
-
-Both ship the same `vauth` command, flags and `.vauthrc`, and share the token
-cache. The Go binary has no runtime dependency; signed `vauth-windows-amd64.exe`
-and `vauth-linux-amd64` builds are attached to each
-[release](https://github.com/131/vvauth/releases). `vauth version` prints the
-build version.
-
-On Windows, the SSH agent is `SSH_AUTH_SOCK` when set, else Pageant (≥ 0.75,
-named pipe autodiscovery), else the OpenSSH agent pipe.
-
-
-# Credits
-* [Francois Leurent](https://github.com/131)
-
-
 # Machine-readable environment
 
 `vauth env --ir://json` resolves the same environment as `vauth env --source`
@@ -84,11 +88,20 @@ Tokens are cached in `~/.vauth/tokens/<session>.creds`, isolated by Vault and
 authentication. Tokens are reused, renewed within their lease’s final third, or
 replaced when expired. Existing `VAULT_TOKEN` takes precedence over cached tokens.
 
-Each session file is armored using `ssh-agent-crypt` and your SSH agent’s first
-key. Without an SSH agent, disk caching is disabled.
+Each session file is armored using
+[ssh-agent-crypt](https://github.com/131/ssh-agent-crypt) and your SSH agent’s
+first key (`VAUTH_USER_IDENTITY`, then `VAUTH_USER_MAIL`, select another one).
+Without an SSH agent, disk caching is disabled.
 
 Set `token_cache: false` in `.vauthrc` to disable disk cache reads and writes.
 
 ## Force reauthentication
 
 `venv --renew` forces authentication, generates and caches a new token.
+
+
+# Credits
+* [Francois Leurent](https://github.com/131)
+* [OpenAI](https://openai.com) Codex (GPT 6.1-sol), in collaboration
+* [Anthropic](https://www.anthropic.com) Claude (Fable 5.1), in collaboration
+* Code signing, courtesy of Essilor International
