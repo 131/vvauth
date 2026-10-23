@@ -46,6 +46,23 @@ env:
 ```
 
 
+# Installation
+
+```bash
+npm install -g vvauth                               # node
+go install github.com/131/vvauth/v2/cmd/vauth@latest  # go
+```
+
+Both ship the same `vauth` command, flags and `.vauthrc`, and share the token
+cache. The Go binary has no runtime dependency; signed `vauth-windows-amd64.exe`
+and `vauth-linux-amd64` builds are attached to each
+[release](https://github.com/131/vvauth/releases). `vauth version` prints the
+build version.
+
+On Windows, the SSH agent is `SSH_AUTH_SOCK` when set, else Pageant (≥ 0.75,
+named pipe autodiscovery), else the OpenSSH agent pipe.
+
+
 # Credits
 * [Francois Leurent](https://github.com/131)
 

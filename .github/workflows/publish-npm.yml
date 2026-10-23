@@ -17,7 +17,12 @@ jobs:
         with:
           node-version: '24.x'
           registry-url: 'https://registry.npmjs.org'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       - run: npm install
       - run: npm run eslint
       - run: npm test
+      - run: go vet ./...
+      - run: go test ./...
       - run: npm publish
