@@ -5,7 +5,7 @@ module github.com/131/vvauth/v2
 go 1.22
 
 require (
-	github.com/131/ssh-agent-crypt v1.2.1-0.20261023084005-e27f47cb4e51
+	github.com/131/ssh-agent-crypt v1.3.3
 	golang.org/x/crypto v0.31.0
 	gopkg.in/yaml.v3 v3.0.1
 )

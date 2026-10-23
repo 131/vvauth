@@ -1,5 +1,5 @@
-github.com/131/ssh-agent-crypt v1.2.1-0.20261023084005-e27f47cb4e51 h1:flAIQwzJkVa8FYdtI2LtbcE9dW7JQiUhQlLqY8pCzNs=
-github.com/131/ssh-agent-crypt v1.2.1-0.20261023084005-e27f47cb4e51/go.mod h1:1HGqyQGWm7fHJD75DeJUGHFxhXp8pyn+4SX072OIld8=
+github.com/131/ssh-agent-crypt v1.3.3 h1:+sITI4C55Ck5Kype/aKcn/6MoGeCfk9GshogF0LZgkI=
+github.com/131/ssh-agent-crypt v1.3.3/go.mod h1:XNiI2n3+2NTwjhyd/plFhrd0vSfWOZ58ocvqTlx1Ydk=
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
 golang.org/x/crypto v0.31.0 h1:ihbySMvVjLAeSH1IbfcRTkD/iNscyz8rGzjF/E5hV6U=
