@@ -827,3 +827,17 @@ test('env.map keys must be environment variable names (they reach `export KEY=` 
   instance.rc = {...instance.rc, env : {map : {TF_HTTP_USERNAME : '$${profile.VAUTH_USER_LOGIN}'}}};
   assert.ok('TF_HTTP_USERNAME' in await instance.env());
 });
+
+test('a project package.json may pin vvauth; other dependencies are ignored', async t => {
+  const {version} = require('../package.json');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'vvauth-project-'));
+  t.after(() => fs.rmSync(cwd, {recursive : true, force : true}));
+  const cli = path.resolve(__dirname, '..', 'index.js');
+  const options = {cwd, env : {...process.env, VAUTHRC : path.join(cwd, 'none')}};
+
+  fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({dependencies : {vvauth : `^${version}`, 'not-installed-anywhere' : '^9'}}));
+  assert.equal((await exec(process.execPath, [cli, 'version'], options)).stdout.trim(), version);
+
+  fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({dependencies : {vvauth : '<0.0.1'}}));
+  await assert.rejects(exec(process.execPath, [cli, 'version'], options), /Unsupported vvauth version .* \(project requires <0.0.1\)/);
+});

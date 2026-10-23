@@ -36,6 +36,7 @@ const logger  = {
 };
 
 
+const {name : PACKAGE_NAME, version : VERSION} = require('./package.json');
 const VAUTH_RC = [process.env.VAUTHRC, path.join(process.cwd(), ".vauthrc"), path.join(os.homedir(), ".vauthrc")];
 const FUNCTION_NAME = "venv";
 const FUNCTION_DECL = `function ${FUNCTION_NAME}() { source <(/usr/bin/env vauth env --source "$@"); }`;
@@ -44,19 +45,14 @@ class vvauth {
   constructor() {
 
 
+    // A project may pin the vauth it expects: `"dependencies": {"vvauth": "^2.5.0"}`.
+    // Only vvauth itself is checked, against the running version.
     let manifest = path.resolve('package.json');
     if(fs.existsSync(manifest)) {
-      let {dependencies = {}} = require(path.resolve('package.json'));
-
-      for(let [module_name, module_version]  of Object.entries(dependencies)) {
-
-        let {version} = require(require.resolve(`${module_name}/package.json`, {
-          paths : ['.', ...(require.main && require.main.paths || module.paths)]
-        }));
-
-        if(!semver.satisfies(version, module_version))
-          throw `Unsupported ${module_name} version (requires ${module_version})`;
-      }
+      const {dependencies = {}} = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+      const required = dependencies[PACKAGE_NAME];
+      if(required && !semver.satisfies(VERSION, required))
+        throw `Unsupported ${PACKAGE_NAME} version ${VERSION} (project requires ${required})`;
     }
 
     this.rc = {};
@@ -98,6 +94,10 @@ class vvauth {
     if(!this.VAULT_ADDR)
       console.error("Not bound to any vault");
 
+  }
+
+  version() {
+    return VERSION;
   }
 
   async run() {

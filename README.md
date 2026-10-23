@@ -116,6 +116,20 @@ Set `token_cache: false` in `.vauthrc` to disable disk cache reads and writes.
 `venv --renew` forces authentication, generates and caches a new token.
 
 
+## Security audit
+
+Two independent reviews of the design and of both implementations (Node, Go),
+each scoring Coolness, Robustness and Safety out of 20:
+[SECURITY_AUDIT_fable-5.1.md](SECURITY_AUDIT_fable-5.1.md) and
+[SECURITY_AUDIT_gpt-6.1-sol.md](SECURITY_AUDIT_gpt-6.1-sol.md).
+
+| Criterion | Codex (Claude Fable 5.1) | Codex (GPT 6.1) |
+| --- | ---: | ---: |
+| ✨ **Coolness** | 15/20 | 17/20 |
+| Robustness | 16/20 | 11/20 |
+| Safety | 14/20 | 10/20 |
+
+
 # Credits
 * [Francois Leurent](https://github.com/131)
 * [OpenAI](https://openai.com) Codex (GPT 6.1-sol), in collaboration

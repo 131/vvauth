@@ -682,3 +682,26 @@ func TestEnvMapKeysMustBeVariableNames(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCheckProjectVersion(t *testing.T) {
+	dir := t.TempDir()
+	manifest := filepath.Join(dir, "package.json")
+	write := func(body string) { os.WriteFile(manifest, []byte(body), 0o644) }
+	write(`{"dependencies":{"vvauth":"^2.5.0","yaml":"^2"}}`)
+	if err := CheckProjectVersion(manifest, "v2.7.1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckProjectVersion(manifest, "v3.0.0"); err == nil || !strings.Contains(err.Error(), "project requires ^2.5.0") {
+		t.Fatalf("v3 accepted by ^2.5.0: %v", err)
+	}
+	if err := CheckProjectVersion(manifest, "(devel)"); err != nil {
+		t.Fatal("devel builds must not be checked:", err)
+	}
+	write(`{"dependencies":{"yaml":"^2"}}`)
+	if err := CheckProjectVersion(manifest, "v0.0.1"); err != nil {
+		t.Fatal("unrelated dependencies must be ignored:", err)
+	}
+	if err := CheckProjectVersion(filepath.Join(dir, "missing.json"), "v1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+}

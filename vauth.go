@@ -18,7 +18,17 @@ import (
 	"time"
 
 	sshagentcrypt "github.com/131/ssh-agent-crypt"
+	"github.com/Masterminds/semver/v3"
 )
+
+// PackageName is the npm name a project uses to pin vauth:
+// `"dependencies": {"vvauth": "^2.5.0"}` in its package.json.
+const PackageName = "vvauth"
+
+// Version is the running version (ldflags -X or debug.ReadBuildInfo), checked
+// by New against the current directory's package.json; empty or non-semver
+// values ("(devel)") skip the check.
+var Version string
 
 // FunctionName is the shell function installed by Install.
 const FunctionName = "venv"
@@ -59,6 +69,38 @@ type token struct {
 	Renewable     bool
 }
 
+// CheckProjectVersion fails when manifest (a package.json) declares a
+// dependency on PackageName that version does not satisfy. A missing manifest,
+// dependency or unparseable version is not an error.
+func CheckProjectVersion(manifest, version string) error {
+	body, err := os.ReadFile(manifest)
+	if err != nil {
+		return nil
+	}
+	var pkg struct {
+		Dependencies map[string]string `json:"dependencies"`
+	}
+	if json.Unmarshal(body, &pkg) != nil {
+		return nil
+	}
+	required, ok := pkg.Dependencies[PackageName]
+	if !ok || required == "" {
+		return nil
+	}
+	current, err := semver.NewVersion(version)
+	if err != nil {
+		return nil
+	}
+	constraint, err := semver.NewConstraint(required)
+	if err != nil {
+		return fmt.Errorf("Invalid %s version requirement '%s' in %s", PackageName, required, manifest)
+	}
+	if !constraint.Check(current) {
+		return fmt.Errorf("Unsupported %s version %s (project requires %s)", PackageName, version, required)
+	}
+	return nil
+}
+
 // Environ converts os.Environ() into a map.
 func Environ() map[string]string {
 	environ := map[string]string{}
@@ -76,6 +118,9 @@ func New() (*Vauth, error) {
 	environ := Environ()
 	home, _ := os.UserHomeDir()
 	cwd, _ := os.Getwd()
+	if err := CheckProjectVersion(filepath.Join(cwd, "package.json"), Version); err != nil {
+		return nil, err
+	}
 	v := &Vauth{
 		Agent:      sshagentcrypt.DefaultAgentAddress(),
 		TokenCache: true,

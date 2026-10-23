@@ -114,6 +114,7 @@ func run(argv []string) error {
 		return nil
 	}
 
+	vvauth.Version = buildVersion()
 	v, err := vvauth.New()
 	if err != nil {
 		return err
@@ -176,6 +177,7 @@ func runCommand(argv []string) error {
 	if len(argv) == 0 {
 		return fmt.Errorf("run: missing command")
 	}
+	vvauth.Version = buildVersion()
 	v, err := vvauth.New()
 	if err != nil {
 		return err

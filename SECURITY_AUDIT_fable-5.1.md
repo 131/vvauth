@@ -60,24 +60,19 @@ contract byte for byte (cache key, armor, outputs) and are cross-tested.
    self-referencing value, and `$&`-style replacement patterns behave
    differently. *Remedy:* port the bounded loop to Node or fix it upstream, and
    add a cross-implementation fixture for pathological macros.
-4. **Node constructor validates the current directory's `package.json`.** It
-   `require`s `<dep>/package.json` for every dependency of whatever project the
-   user is standing in and aborts on a semver mismatch. Unrelated to vauth,
-   surprising, and a divergence from Go. *Remedy:* drop it, or scope it to
-   vvauth's own manifest.
-5. **Error swallowing.** `_read_token_cache` and the GitLab remote probe use
+4. **Error swallowing.** `_read_token_cache` and the GitLab remote probe use
    bare `catch(err) {}`; Go returns `nil` from `readTokenCache` for any cause.
    A corrupt cache, a wrong key or a missing agent all look alike. *Remedy:* a
    `--debug`-visible reason (the `vvauth:debug` logger exists in Node).
-6. **HTTP hygiene.** Node uses `url.parse` (deprecated, lenient) and a 60 s
+5. **HTTP hygiene.** Node uses `url.parse` (deprecated, lenient) and a 60 s
    default timeout; Go uses `http.DefaultClient` with no timeout. Neither pins
    or restricts TLS. *Remedy:* `url.URL`, an explicit `http.Client{Timeout}`,
    and reject `http://` Vault addresses unless loopback.
-7. **`install` rewrites `~/.bashrc` wholesale** (`0644`, trimmed, re-written),
+6. **`install` rewrites `~/.bashrc` wholesale** (`0644`, trimmed, re-written),
    and `FunctionExists` runs `bash -lc`, executing the user's whole login
    profile. *Remedy:* append-only, and grep the file instead of spawning a
    login shell.
-8. **Release integrity.** `SHA256SUMS` is unsigned and the Linux binary is
+7. **Release integrity.** `SHA256SUMS` is unsigned and the Linux binary is
    unsigned; `release.yml` pulls `131/gh-actions@v1` by mutable tag. *Remedy:*
    sign the checksum file (or publish build provenance) and pin the action by
    commit.
@@ -87,7 +82,7 @@ contract byte for byte (cache key, armor, outputs) and are cross-tested.
 | Criterion | Score | Why |
 | --- | ---: | --- |
 | Coolness | 15/20 | One `.vauthrc`, one `venv`, and a Vault token appears from the SSH key you already carry, cached safely, identical from Node or a signed static binary. The macro language and the GitLab `CI_PROJECT_*` derivation make it a genuinely pleasant developer tool; what a repository's `./.vauthrc` may decide is the open question. |
-| Robustness | 15/20 | Lease logic, cache isolation and Node/Go parity are tested and solid; loses on unbounded macro recursion in Node, the cwd `package.json` check, swallowed errors and the absence of HTTP timeouts in Go. |
+| Robustness | 16/20 | Lease logic, cache isolation and Node/Go parity are tested and solid; a project `package.json` may pin the `vvauth` version it expects, in both runtimes. Loses on unbounded macro recursion in Node, swallowed errors and the absence of HTTP timeouts in Go. |
 | Safety | 14/20 | Good secret handling: encrypted cache, escaped values, validated variable names, no clear-text fallbacks. Loses on the blanket trust in `./.vauthrc` (a cloned repository picks the Vault and gets a raw agent signature), on the agent-socket exposure of the cache, and on HTTP without timeouts or transport constraints. |
 
 Codex (Claude Fable 5.1)
