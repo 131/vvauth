@@ -18,6 +18,7 @@ import (
 	"time"
 
 	sshagentcrypt "github.com/131/ssh-agent-crypt"
+	vauthlogin "github.com/131/vauth-login"
 )
 
 const hour = 60 * 60
@@ -66,6 +67,9 @@ type fixtureOptions struct {
 	creationTTL  *int64
 	lookupStatus int
 	renewStatus  int
+	metadata     map[string]any
+	database     map[string]any
+	secrets      map[string]any
 }
 
 func seconds(value float64) *float64 { return &value }
@@ -110,7 +114,18 @@ func newFixture(t *testing.T, options fixtureOptions) *fixture {
 			status(options.renewStatus)
 			fmt.Fprintf(w, `{"auth":{"client_token":%q,"lease_duration":%d,"renewable":true}}`, r.Header.Get("X-Vault-Token"), 24*hour)
 		case "/v1/identity/entity/id/test-entity":
-			fmt.Fprint(w, `{"data":{"metadata":{}}}`)
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"metadata": options.metadata}})
+		case "/v1/private/alice/data/.vauth_database":
+			if r.Method == "POST" {
+				var payload struct {
+					Data map[string]any `json:"data"`
+				}
+				json.Unmarshal(body, &payload)
+				f.options.database = payload.Data
+			}
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"data": f.options.database}})
+		case "/v1/secrets/data/app":
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"data": options.secrets}})
 		default:
 			w.WriteHeader(404)
 			fmt.Fprint(w, `{}`)
@@ -122,16 +137,34 @@ func newFixture(t *testing.T, options fixtureOptions) *fixture {
 
 // client avoids the real user's environment, configuration and cache.
 func (f *fixture) client() *Vauth {
-	return &Vauth{
-		RC:         RC{JWTAuth: &JWTAuth{Path: "jwt", JWT: "test-jwt", Role: "test-role"}},
+	return &Vauth{Vauth: &vauthlogin.Vauth{
+		RC:         vauthlogin.RC{JWTAuth: &vauthlogin.JWTAuth{Path: "jwt", JWT: "test-jwt", Role: "test-role"}},
 		VaultAddr:  f.server.URL,
 		Agent:      agentSocket,
 		TokenCache: true,
 		CacheDir:   filepath.Join(f.dir, ".vauth", "tokens"),
 		Environ:    map[string]string{},
 		Stderr:     io.Discard,
-	}
+	}}
 }
+
+// Fixture data follows the shared cache format; the application owns no cache code.
+type tokenCache struct {
+	Token         string `json:"token"`
+	LeaseDuration int64  `json:"lease_duration"`
+	Renewable     bool   `json:"renewable"`
+	ExpiresAt     *int64 `json:"expires_at"`
+}
+
+func testCacheKey(v *Vauth) string {
+	key := `{"vault_addr":` + string(jsonString(strings.Trim(v.VaultAddr, "/")))
+	if auth := v.RC.AuthKey(); auth != "" {
+		key += "," + auth
+	}
+	return sha256Hex(key + "}")
+}
+
+func cacheFile(v *Vauth) string { return filepath.Join(v.CacheDir, testCacheKey(v)+".creds") }
 
 func (f *fixture) paths() []string {
 	var paths []string
@@ -143,7 +176,7 @@ func (f *fixture) paths() []string {
 
 func (f *fixture) read(v *Vauth) tokenCache {
 	f.t.Helper()
-	armor, err := os.ReadFile(v.TokenCacheFile())
+	armor, err := os.ReadFile(cacheFile(v))
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -160,7 +193,18 @@ func (f *fixture) read(v *Vauth) tokenCache {
 
 func (f *fixture) write(v *Vauth, cache tokenCache) {
 	f.t.Helper()
-	if err := v.writeTokenCache(v.TokenCacheFile(), v.TokenCacheFile()+".next", &cache); err != nil {
+	body, err := json.Marshal(cache)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	armor, err := sshagentcrypt.Encrypt(body, "", &sshagentcrypt.Options{AgentSocket: agentSocket})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.MkdirAll(v.CacheDir, 0700); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.WriteFile(cacheFile(v), []byte(armor), 0600); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -178,7 +222,8 @@ func (f *fixture) remaining(v *Vauth, ttl float64) {
 
 func (f *fixture) seed(v *Vauth, lease int64) {
 	renewable := f.options.renewable == nil || *f.options.renewable
-	v.saveTokenCache(&token{Value: "cached-token", TTL: float64(lease), LeaseDuration: lease, Renewable: renewable})
+	expires := time.Now().UnixMilli() + lease*1000
+	f.write(v, tokenCache{Token: "cached-token", LeaseDuration: lease, Renewable: renewable, ExpiresAt: &expires})
 	if f.options.ttl != nil {
 		f.remaining(v, *f.options.ttl)
 	}
@@ -216,14 +261,14 @@ func TestLoginPersistsAndReuses(t *testing.T) {
 	if cache.ExpiresAt == nil || *cache.ExpiresAt < time.Now().UnixMilli()+23*hour*1000 {
 		t.Fatalf("expires_at %v", cache.ExpiresAt)
 	}
-	info, _ := os.Stat(first.TokenCacheFile())
+	info, _ := os.Stat(cacheFile(first))
 	equal(t, info.Mode().Perm(), 0o600)
-	info, _ = os.Stat(filepath.Dir(first.TokenCacheFile()))
+	info, _ = os.Stat(filepath.Dir(cacheFile(first)))
 	equal(t, info.Mode().Perm(), 0o700)
 	second := f.client()
 	equal(t, connect(t, second, false), "fresh-token")
 	equalPaths(t, f.paths(), "/v1/auth/jwt/login")
-	entries, _ := os.ReadDir(filepath.Dir(first.TokenCacheFile()))
+	entries, _ := os.ReadDir(filepath.Dir(cacheFile(first)))
 	equal(t, len(entries), 1)
 }
 
@@ -264,7 +309,7 @@ func TestCachedTokensReusedWithoutRevocationCheck(t *testing.T) {
 	f.seed(v, 12*hour)
 	equal(t, connect(t, v, false), "cached-token")
 	equal(t, len(f.requests), 0)
-	if _, _, err := v.lookupToken(v.VaultToken); err == nil {
+	if _, err := v.LookupSelf(v.VaultToken); err == nil {
 		t.Fatal("lookup should fail")
 	}
 }
@@ -294,8 +339,8 @@ func TestServerFailuresDoNotGenerateTokens(t *testing.T) {
 	f.seed(v, 12*hour)
 	v.VaultToken = "uncached-token"
 	for i := 0; i < 2; i++ {
-		if _, err := v.Connect(false); err == nil {
-			t.Fatal("connect should fail")
+		if _, err := v.LookupSelf(v.VaultToken); err == nil {
+			t.Fatal("lookup should fail")
 		}
 	}
 	equalPaths(t, f.paths(), "/v1/auth/token/lookup-self", "/v1/auth/token/lookup-self")
@@ -309,15 +354,14 @@ func TestServerFailuresDoNotGenerateTokens(t *testing.T) {
 	equalPaths(t, f.paths(), "/v1/auth/token/renew-self")
 }
 
-func TestEnvironmentTokenRespectedAndCached(t *testing.T) {
+func TestInheritedTokenIsOfflineAndNotCached(t *testing.T) {
 	f := newFixture(t, fixtureOptions{})
 	v := f.client()
 	f.seed(v, 12*hour)
 	v.VaultToken = "environment-token"
 	equal(t, connect(t, v, false), "environment-token")
-	equal(t, f.read(v).Token, "environment-token")
-	equal(t, f.requests[0].Token, "environment-token")
-	equal(t, len(f.requests), 1)
+	equal(t, f.read(v).Token, "cached-token")
+	equal(t, len(f.requests), 0)
 }
 
 func TestNonExpiringTokensReused(t *testing.T) {
@@ -334,8 +378,8 @@ func TestNonExpiringTokensReused(t *testing.T) {
 func TestCorruptCacheReplaced(t *testing.T) {
 	f := newFixture(t, fixtureOptions{})
 	v := f.client()
-	os.MkdirAll(filepath.Dir(v.TokenCacheFile()), 0o700)
-	os.WriteFile(v.TokenCacheFile(), []byte("{broken"), 0o600)
+	os.MkdirAll(filepath.Dir(cacheFile(v)), 0o700)
+	os.WriteFile(cacheFile(v), []byte("{broken"), 0o600)
 	equal(t, connect(t, v, false), "fresh-token")
 	equal(t, f.read(v).Token, "fresh-token")
 }
@@ -343,8 +387,8 @@ func TestCorruptCacheReplaced(t *testing.T) {
 func TestPlaintextCacheNotAccepted(t *testing.T) {
 	f := newFixture(t, fixtureOptions{})
 	v := f.client()
-	os.MkdirAll(filepath.Dir(v.TokenCacheFile()), 0o700)
-	os.WriteFile(v.TokenCacheFile(), []byte(`{"token":"plain-token","lease_duration":43200,"renewable":true,"expires_at":null}`), 0o600)
+	os.MkdirAll(filepath.Dir(cacheFile(v)), 0o700)
+	os.WriteFile(cacheFile(v), []byte(`{"token":"plain-token","lease_duration":43200,"renewable":true,"expires_at":null}`), 0o600)
 	equal(t, connect(t, v, false), "fresh-token")
 	equalPaths(t, f.paths(), "/v1/auth/jwt/login")
 }
@@ -356,19 +400,19 @@ func TestCacheIsolation(t *testing.T) {
 	second := f.client()
 	second.RC.JWTAuth.Role = "other-role"
 	equal(t, connect(t, second, false), "fresh-token")
-	if first.TokenCacheFile() == second.TokenCacheFile() {
+	if cacheFile(first) == cacheFile(second) {
 		t.Fatal("cache files should differ")
 	}
 	equal(t, f.read(first).Token, "cached-token")
 	equal(t, f.read(second).Token, "fresh-token")
 	third := f.client()
 	third.VaultAddr = "http://other-vault.test"
-	if third.TokenCacheKey() == first.TokenCacheKey() {
+	if testCacheKey(third) == testCacheKey(first) {
 		t.Fatal("cache keys should differ")
 	}
-	entries, _ := os.ReadDir(filepath.Dir(first.TokenCacheFile()))
+	entries, _ := os.ReadDir(filepath.Dir(cacheFile(first)))
 	equal(t, len(entries), 2)
-	armor, _ := os.ReadFile(first.TokenCacheFile())
+	armor, _ := os.ReadFile(cacheFile(first))
 	if bytes.Contains(armor, []byte("test-jwt")) || bytes.Contains(armor, []byte("cached-token")) {
 		t.Fatal("cache leaks secrets")
 	}
@@ -377,16 +421,16 @@ func TestCacheIsolation(t *testing.T) {
 func TestTokenCacheKeyMatchesNode(t *testing.T) {
 	// sha256 of JSON.stringify({vault_addr, ssh_auth, jwt_auth}) as the Node
 	// implementation renders it (undefined members omitted).
-	v := &Vauth{VaultAddr: "https://vault.example.test/", RC: RC{SSHAuth: &SSHAuth{Role: "alice"}}}
-	equal(t, v.TokenCacheKey(), sha256Hex(`{"vault_addr":"https://vault.example.test","ssh_auth":{"role":"alice"}}`))
-	v = &Vauth{VaultAddr: "https://vault.example.test", RC: RC{JWTAuth: &JWTAuth{Path: "jwt", JWT: "x", Role: "r"}}}
-	equal(t, v.TokenCacheKey(), sha256Hex(`{"vault_addr":"https://vault.example.test","jwt_auth":{"path":"jwt","jwt":"x","role":"r"}}`))
-	rc, err := ParseRC([]byte("vault_addr: https://vault.example.test\nssh_auth:\n  role: $${env.USER}\n"), ".vauthrc", map[string]string{"USER": "bob"})
+	v := &Vauth{Vauth: &vauthlogin.Vauth{VaultAddr: "https://vault.example.test/", RC: vauthlogin.RC{SSHAuth: &vauthlogin.SSHAuth{Role: "alice"}}}}
+	equal(t, testCacheKey(v), sha256Hex(`{"vault_addr":"https://vault.example.test","ssh_auth":{"role":"alice"}}`))
+	v = &Vauth{Vauth: &vauthlogin.Vauth{VaultAddr: "https://vault.example.test", RC: vauthlogin.RC{JWTAuth: &vauthlogin.JWTAuth{Path: "jwt", JWT: "x", Role: "r"}}}}
+	equal(t, testCacheKey(v), sha256Hex(`{"vault_addr":"https://vault.example.test","jwt_auth":{"path":"jwt","jwt":"x","role":"r"}}`))
+	rc, err := vauthlogin.ParseRC([]byte("vault_addr: https://vault.example.test\nssh_auth:\n  role: $${env.USER}\n"), ".vauthrc", map[string]string{"USER": "bob"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	v = &Vauth{VaultAddr: rc.VaultAddr, RC: *rc}
-	equal(t, v.TokenCacheKey(), sha256Hex(`{"vault_addr":"https://vault.example.test","ssh_auth":{"role":"bob"}}`))
+	v = &Vauth{Vauth: &vauthlogin.Vauth{VaultAddr: rc.VaultAddr, RC: *rc}}
+	equal(t, testCacheKey(v), sha256Hex(`{"vault_addr":"https://vault.example.test","ssh_auth":{"role":"bob"}}`))
 }
 
 func TestRepeatedConnectReusesConnection(t *testing.T) {
@@ -400,8 +444,8 @@ func TestRepeatedConnectReusesConnection(t *testing.T) {
 func TestUnwritableCacheDoesNotPreventLogin(t *testing.T) {
 	f := newFixture(t, fixtureOptions{})
 	v := f.client()
-	os.MkdirAll(filepath.Dir(filepath.Dir(v.TokenCacheFile())), 0o700)
-	os.WriteFile(filepath.Dir(v.TokenCacheFile()), []byte("not a directory"), 0o600)
+	os.MkdirAll(filepath.Dir(filepath.Dir(cacheFile(v))), 0o700)
+	os.WriteFile(filepath.Dir(cacheFile(v)), []byte("not a directory"), 0o600)
 	var stderr bytes.Buffer
 	v.Stderr = &stderr
 	equal(t, connect(t, v, false), "fresh-token")
@@ -410,14 +454,14 @@ func TestUnwritableCacheDoesNotPreventLogin(t *testing.T) {
 	}
 }
 
-func TestWithoutAuthMethodTokensIgnored(t *testing.T) {
+func TestWithoutAuthMethodInheritanceStillWorks(t *testing.T) {
 	f := newFixture(t, fixtureOptions{lookupStatus: 403})
 	v := f.client()
 	f.seed(v, 12*hour)
-	v.RC = RC{}
+	v.RC = vauthlogin.RC{}
 	v.VaultToken = "uncached-token"
-	equal(t, connect(t, v, false), "")
-	equal(t, v.VaultToken, "")
+	equal(t, connect(t, v, false), "uncached-token")
+	equal(t, v.VaultToken, "uncached-token")
 	equal(t, connect(t, v, true), "")
 	equal(t, len(f.requests), 0)
 }
@@ -496,14 +540,14 @@ func TestNormalReuseNeverWrites(t *testing.T) {
 	v := f.client()
 	f.seed(v, 12*hour)
 	v.VaultToken = "cached-token"
-	before, _ := os.ReadFile(v.TokenCacheFile())
-	stat, _ := os.Stat(v.TokenCacheFile())
+	before, _ := os.ReadFile(cacheFile(v))
+	stat, _ := os.Stat(cacheFile(v))
 	equal(t, connect(t, v, false), "cached-token")
-	after, _ := os.ReadFile(v.TokenCacheFile())
+	after, _ := os.ReadFile(cacheFile(v))
 	if !bytes.Equal(before, after) {
 		t.Fatal("cache rewritten")
 	}
-	again, _ := os.Stat(v.TokenCacheFile())
+	again, _ := os.Stat(cacheFile(v))
 	equal(t, again.ModTime(), stat.ModTime())
 	equal(t, len(f.requests), 0)
 }
@@ -511,11 +555,11 @@ func TestNormalReuseNeverWrites(t *testing.T) {
 func TestLookupReturnsLease(t *testing.T) {
 	f := newFixture(t, fixtureOptions{ttl: seconds(hour)})
 	v := f.client()
-	info, lease, err := v.lookupToken("environment-token")
+	info, err := v.LookupSelf("environment-token")
 	if err != nil {
 		t.Fatal(err)
 	}
-	equal(t, lease, 24*hour)
+	equal(t, info.LeaseDuration, 24*hour)
 	equal(t, info.TTL, float64(hour))
 	equal(t, len(f.requests), 1)
 }
@@ -525,7 +569,7 @@ func TestTokenCacheDisabled(t *testing.T) {
 	v := f.client()
 	v.TokenCache = false
 	equal(t, connect(t, v, false), "fresh-token")
-	if _, err := os.Stat(v.TokenCacheFile()); err == nil {
+	if _, err := os.Stat(cacheFile(v)); err == nil {
 		t.Fatal("cache written")
 	}
 	equalPaths(t, f.paths(), "/v1/auth/jwt/login")
@@ -533,10 +577,10 @@ func TestTokenCacheDisabled(t *testing.T) {
 	f = newFixture(t, fixtureOptions{})
 	v = f.client()
 	f.seed(v, 12*hour)
-	before, _ := os.ReadFile(v.TokenCacheFile())
+	before, _ := os.ReadFile(cacheFile(v))
 	v.TokenCache = false
 	equal(t, connect(t, v, false), "fresh-token")
-	after, _ := os.ReadFile(v.TokenCacheFile())
+	after, _ := os.ReadFile(cacheFile(v))
 	if !bytes.Equal(before, after) {
 		t.Fatal("disabled cache touched disk")
 	}
@@ -546,14 +590,14 @@ func TestTokenCacheDisabled(t *testing.T) {
 	v.TokenCache = false
 	v.VaultToken = "environment-token"
 	equal(t, connect(t, v, false), "environment-token")
-	equalPaths(t, f.paths(), "/v1/auth/token/lookup-self")
-	if _, err := os.Stat(v.TokenCacheFile()); err == nil {
+	equal(t, len(f.requests), 0)
+	if _, err := os.Stat(cacheFile(v)); err == nil {
 		t.Fatal("cache written")
 	}
 }
 
 func TestTokenCacheFalseFromRC(t *testing.T) {
-	rc, err := ParseRC([]byte("vault_addr: https://vault.example.test\ntoken_cache: false\n"), ".vauthrc", map[string]string{})
+	rc, err := vauthlogin.ParseRC([]byte("vault_addr: https://vault.example.test\ntoken_cache: false\n"), ".vauthrc", map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,7 +610,7 @@ func TestCacheIsArmorOnly(t *testing.T) {
 	f := newFixture(t, fixtureOptions{})
 	v := f.client()
 	connect(t, v, false)
-	armor, _ := os.ReadFile(v.TokenCacheFile())
+	armor, _ := os.ReadFile(cacheFile(v))
 	if !bytes.HasPrefix(armor, []byte("ssh-agent-crypt:")) || bytes.Contains(armor, []byte("fresh-token")) {
 		t.Fatalf("not armored: %q", armor[:40])
 	}
@@ -588,35 +632,14 @@ func TestWithoutAgentCacheSkipped(t *testing.T) {
 	f := newFixture(t, fixtureOptions{})
 	v := f.client()
 	f.seed(v, 12*hour)
-	before, _ := os.ReadFile(v.TokenCacheFile())
+	before, _ := os.ReadFile(cacheFile(v))
 	v.Agent = ""
 	v.TokenCache = false // as New() does when no agent is configured
 	equal(t, connect(t, v, false), "fresh-token")
-	after, _ := os.ReadFile(v.TokenCacheFile())
+	after, _ := os.ReadFile(cacheFile(v))
 	if !bytes.Equal(before, after) {
 		t.Fatal("existing armor touched")
 	}
-}
-
-func TestTokenStatus(t *testing.T) {
-	v := &Vauth{VaultAddr: "https://vault.example.test"}
-	for _, c := range []struct {
-		ttl      float64
-		duration string
-	}{
-		{2*86400 + 3*hour + 20*60 + 5, "2d 3h"}, {12*hour + 30*60 + 5, "12h 30m"}, {5*60 + 20, "5m 20s"},
-		{86400, "1d"}, {30 * 60, "30m"}, {45, "45s"}, {86400 + 20, "1d 20s"}, {hour + 5, "1h 5s"},
-		{400*86400 + 2*hour, "1y 1month"}, {60.9, "1m 1s"},
-	} {
-		var stderr bytes.Buffer
-		v.Stderr = &stderr
-		v.tokenStatus("reused", &token{TTL: c.ttl})
-		equal(t, stderr.String(), "Vauth token: reused · https://vault.example.test · "+c.duration+"\n")
-	}
-	var stderr bytes.Buffer
-	v.Stderr = &stderr
-	v.tokenStatus("generated", &token{})
-	equal(t, stderr.String(), "Vauth token: generated · https://vault.example.test · valid indefinitely\n")
 }
 
 func TestOneStatusPerConnection(t *testing.T) {
@@ -636,11 +659,11 @@ func TestOneStatusPerConnection(t *testing.T) {
 		var stderr bytes.Buffer
 		v.Stderr = &stderr
 		connect(t, v, false)
-		equal(t, stderr.String(), fmt.Sprintf("Vauth token: %s · %s · %s\n", c.operation, f.server.URL, c.duration))
+		equal(t, stderr.String(), fmt.Sprintf("Vauth token: %s · %s\n", c.operation, c.duration))
 	}
-	f := newFixture(t, fixtureOptions{lookupStatus: 500})
+	f := newFixture(t, fixtureOptions{ttl: seconds(hour), renewStatus: 500})
 	v := f.client()
-	v.VaultToken = "uncached-token"
+	f.seed(v, 12*hour)
 	var stderr bytes.Buffer
 	v.Stderr = &stderr
 	if _, err := v.Connect(false); err == nil {
@@ -657,12 +680,6 @@ func TestReplaceEnv(t *testing.T) {
 	equal(t, ReplaceEnv("plain", dict), "plain")
 }
 
-func TestHumanDiff(t *testing.T) {
-	equal(t, HumanDiff(0, 2), "0s")
-	equal(t, HumanDiff(59, 2), "59s")
-	equal(t, HumanDiff(3600*24*31, 2), "1month 1d")
-}
-
 func sha256Hex(value string) string {
 	digest := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(digest[:])
@@ -671,13 +688,13 @@ func sha256Hex(value string) string {
 func TestEnvMapKeysMustBeVariableNames(t *testing.T) {
 	f := newFixture(t, fixtureOptions{})
 	v := f.client()
-	v.RC.Env = &EnvConfig{}
-	v.RC.Env.Map.Set("SAFE; printf INJECTED >&2; #", "dummy")
+	v.Config.Env = &EnvConfig{}
+	v.Config.Env.Map.Set("SAFE; printf INJECTED >&2; #", "dummy")
 	if _, err := v.Env(false); err == nil || !strings.Contains(err.Error(), "Invalid environment variable name") {
 		t.Fatalf("hostile env.map key accepted: %v", err)
 	}
-	v.RC.Env = &EnvConfig{}
-	v.RC.Env.Map.Set("TF_HTTP_USERNAME", "$${profile.VAUTH_USER_LOGIN}")
+	v.Config.Env = &EnvConfig{}
+	v.Config.Env.Map.Set("TF_HTTP_USERNAME", "$${profile.VAUTH_USER_LOGIN}")
 	if _, err := v.Env(false); err != nil {
 		t.Fatal(err)
 	}
@@ -704,4 +721,61 @@ func TestCheckProjectVersion(t *testing.T) {
 	if err := CheckProjectVersion(filepath.Join(dir, "missing.json"), "v1.0.0"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestProfileKVAndEnvironmentUseLoginTransport(t *testing.T) {
+	f := newFixture(t, fixtureOptions{
+		metadata: map[string]any{"VAUTH_USER_LOGIN": "alice", "VAUTH_USER_NAME": "Alice", "VAUTH_USER_MAIL": "alice@example.test"},
+		database: map[string]any{"TEAM": "ops"}, secrets: map[string]any{"API_KEY": "fixture-secret"},
+	})
+	v := f.client()
+	v.Config.Env = &EnvConfig{Git: true, Paths: []string{"app"}}
+	v.Config.Env.Map.Set("LOGIN", "$${profile.VAUTH_USER_LOGIN}")
+	v.Config.Env.Map.Set("TEAM", "$${profile.TEAM}")
+	v.Config.Env.Map.Set("API_KEY", "$${secrets.API_KEY}")
+	env, err := v.Env(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{"VAULT_TOKEN": "fresh-token", "LOGIN": "alice", "TEAM": "ops", "API_KEY": "fixture-secret", "GIT_AUTHOR_NAME": "Alice"} {
+		value, ok := env.Get(key)
+		if !ok {
+			t.Fatalf("missing %s", key)
+		}
+		equal(t, value, want)
+	}
+	equalPaths(t, f.paths(), "/v1/auth/jwt/login", "/v1/auth/token/lookup-self", "/v1/identity/entity/id/test-entity", "/v1/private/alice/data/.vauth_database", "/v1/secrets/data/app")
+	for _, r := range f.requests[1:] {
+		equal(t, r.Token, "fresh-token")
+	}
+	if err := v.Set("feature", "enabled"); err != nil {
+		t.Fatal(err)
+	}
+	equal(t, f.options.database["FEATURE"], "enabled")
+	if err := v.Unset("feature"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.options.database["FEATURE"]; ok {
+		t.Fatal("unset key retained")
+	}
+	logins := 0
+	for _, r := range f.requests {
+		if strings.HasSuffix(r.Path, "/login") {
+			logins++
+		}
+	}
+	equal(t, logins, 1)
+}
+
+func TestEnvironmentConfigIsSeparateFromAuthentication(t *testing.T) {
+	config, err := ParseConfig([]byte(`jwt_auth: ignored
+env: {map: {LOGIN: '$${env.LOGIN}'}}
+ssh-agent-crypt: {path: '$${env.FILE}'}
+`), ".vauthrc", map[string]string{"LOGIN": "alice", "FILE": "fixture.creds"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, _ := config.Env.Map.Get("LOGIN")
+	equal(t, value, "alice")
+	equal(t, config.AgentCrypt.Path, "fixture.creds")
 }

@@ -1,8 +1,9 @@
 // Command vauth is the standalone Vault credentials helper: same commands
-// and flags as the vvauth npm package (cnyks runner).
+// and flags as the vvauth npm package.
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -110,7 +111,7 @@ func run(argv []string) error {
 	command, args := args[0], args[1:]
 	_, jsonOutput := dict["ir://json"]
 	if command == "version" || command == "--version" {
-		fmt.Println(buildVersion())
+		fmt.Println(strings.TrimPrefix(buildVersion(), "v"))
 		return nil
 	}
 
@@ -174,6 +175,9 @@ func run(argv []string) error {
 }
 
 func runCommand(argv []string) error {
+	if len(argv) > 0 && argv[0] == "--" {
+		argv = argv[1:]
+	}
 	if len(argv) == 0 {
 		return fmt.Errorf("run: missing command")
 	}
@@ -194,8 +198,18 @@ func runCommand(argv []string) error {
 // otherwise (objects are still rendered as JSON).
 func respond(response any, jsonOutput bool) error {
 	if text, ok := response.(string); ok && !jsonOutput {
-		// cnyks --ir://raw writes String(response) without a trailing newline.
+		// Raw token output has no trailing newline.
 		_, err := fmt.Fprint(os.Stdout, text)
+		return err
+	}
+	if jsonOutput {
+		var out bytes.Buffer
+		encoder := json.NewEncoder(&out)
+		encoder.SetEscapeHTML(false)
+		if err := encoder.Encode(response); err != nil {
+			return err
+		}
+		_, err := os.Stdout.Write(bytes.TrimSuffix(out.Bytes(), []byte("\n")))
 		return err
 	}
 	encoder := json.NewEncoder(os.Stdout)

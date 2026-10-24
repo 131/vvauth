@@ -1,9 +1,9 @@
-Vault Creds manager
+# vvauth
 
-This projects helps you log yourself in a HCL vault and retrieve VAULT_TOKEN through different auth methods
-* jwt login
-* ssh (through ssh-agent) login
-
+Resolve a shell environment from your Vault identity, private settings and
+secrets. [vauth-login](https://github.com/131/vauth-login) handles authentication,
+token caching and HTTP; vvauth owns profiles, macro expansion, KV operations
+and environment publication. Available as a Node module/CLI and a Go module/CLI.
 
 # Installation
 
@@ -66,7 +66,7 @@ The configuration file should abide the following schema
 # vauth URL
 vault_addr: https://vauth.myserver.org
 
-# for vauth-auth-plugin-ssh, configure the binding role here
+# SSH authentication role, consumed by vauth-login
 ssh_auth:
   role: $${env.VAUTH_USER_LOGIN}
 env:
@@ -90,7 +90,8 @@ env:
 
 `vauth env --ir://json` writes the resolved environment as one JSON object on
 stdout; diagnostics stay on stderr, so a caller can parse stdout directly.
-Every command, flag, output and the Node/Go module signatures are in
+CLI command spelling remains lowercase; public Node/Go SDK methods use the
+same PascalCase names. Every command, flag, output and module signature is in
 [API_and_tests.md](API_and_tests.md).
 
 ```bash
@@ -100,9 +101,10 @@ vauth env --ir://json
 
 # Token cache
 
-Tokens are cached in `~/.vauth/tokens/<session>.creds`, isolated by Vault and
-authentication. Tokens are reused, renewed within their lease’s final third, or
-replaced when expired. Existing `VAULT_TOKEN` takes precedence over cached tokens.
+[vauth-login](https://github.com/131/vauth-login) owns the cache in
+`~/.vauth/tokens/<session>.creds`, shared by Node and Go. It reuses, renews or
+replaces cached tokens as needed. An inherited `VAULT_TOKEN` is returned as is,
+without renewal or persistence; profile retrieval is an explicit separate step.
 
 Each session file is armored using
 [ssh-agent-crypt](https://github.com/131/ssh-agent-crypt) and your SSH agent’s
@@ -117,6 +119,10 @@ Set `token_cache: false` in `.vauthrc` to disable disk cache reads and writes.
 
 
 ## Security audit
+
+The reports below describe the pre-integration implementation. This integration
+uses vauth-login 1.1.3 without regenerating or rewriting their findings/scores.
+
 
 Two independent reviews of the design and of both implementations (Node, Go),
 each scoring Coolness, Robustness and Safety out of 20:

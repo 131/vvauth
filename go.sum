@@ -1,5 +1,7 @@
 github.com/131/ssh-agent-crypt v1.4.1 h1:Ng6+kKhFkk6XvpCLT8+VhWH9J5wwh1wq4NlHsZwa4NA=
 github.com/131/ssh-agent-crypt v1.4.1/go.mod h1:XNiI2n3+2NTwjhyd/plFhrd0vSfWOZ58ocvqTlx1Ydk=
+github.com/131/vauth-login v1.1.3 h1:XzwooJBhHIltt5PGRVoRXmgsrX6JTSNYPUNrG1O4SXM=
+github.com/131/vauth-login v1.1.3/go.mod h1:+Z5ibQE3Wa1ouVSRaiH7t5ckNPlAcpx0j8C8KF+5Z9M=
 github.com/Masterminds/semver/v3 v3.5.0 h1:kQceYJfbupGfZOKZQg0kou0DgAKhzDg2NZPAwZ/2OOE=
 github.com/Masterminds/semver/v3 v3.5.0/go.mod h1:4V+yj/TJE1HU9XfppCwVMZq3I84lprf4nC11bSS5beM=
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=

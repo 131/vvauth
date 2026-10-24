@@ -4,44 +4,26 @@
 const os   = require('os');
 const fs    = require('fs');
 const path  = require('path');
-const url   = require('url');
-const {createHash} = require('crypto');
-const {encrypt, decrypt} = require('ssh-agent-crypt');
+const {decrypt} = require('ssh-agent-crypt');
+const VauthLogin = require('vauth-login');
+const parseArgs = require('nyks/process/parseArgs');
 const {spawn, execFileSync} = require('child_process');
-const passthru = require('nyks/child_process/passthru');
-const boolPrompt = require('cnyks/prompt/bool');
+const readline = require('readline');
 
 const {parse} = require('yaml');
 const semver     = require('semver');
 const trim       = require('mout/string/trim');
 const get        = require('mout/object/get');
-const eachLimit = require('nyks/async/eachLimit');
 const walk       = require('nyks/object/walk');
-const humanDiff  = require('nyks/date/humanDiff');
 
-const request    = require('nyks/http/request');
-const drain      = require('nyks/stream/drain');
 const replaceEnv = require('nyks/string/replaceEnv');
-const promiser   = require('nyks/function/promiser');
-const {args} = require('nyks/process/parseArgs')();
-
-
-const {createAgent} = require('ssh2/lib/agent');
-const debug = require('debug');
-
-const logger  = {
-  debug : debug('vvauth:debug'),
-  info  : debug('vvauth:info'),
-  error : debug('vvauth:error'),
-};
 
 
 const {name : PACKAGE_NAME, version : VERSION} = require('./package.json');
-const VAUTH_RC = [process.env.VAUTHRC, path.join(process.cwd(), ".vauthrc"), path.join(os.homedir(), ".vauthrc")];
 const FUNCTION_NAME = "venv";
 const FUNCTION_DECL = `function ${FUNCTION_NAME}() { source <(/usr/bin/env vauth env --source "$@"); }`;
 
-class vvauth {
+class Vvauth extends VauthLogin {
   constructor() {
 
 
@@ -55,9 +37,10 @@ class vvauth {
         throw `Unsupported ${PACKAGE_NAME} version ${VERSION} (project requires ${required})`;
     }
 
-    this.rc = {};
+    super();
+    this.config = {};
 
-    let vauth_rc = VAUTH_RC.filter(path => path && fs.existsSync(path))[0];
+    const vauth_rc = this.rc_file;
     if(vauth_rc) {
       let body = fs.readFileSync(vauth_rc, 'utf8');
       let rc = parse(body);
@@ -81,171 +64,38 @@ class vvauth {
         } catch(err) {}
       }
 
-      this.rc = walk(rc, v =>  replaceEnv(v, {env}));
+      const config = Object.fromEntries(['env', 'ssh-agent-crypt'].filter(key => rc && Object.hasOwn(rc, key)).map(key => [key, rc[key]]));
+      this.config = walk(config, v => replaceEnv(v, {env}));
     }
 
-
-    if(!process.env.SSH_AUTH_SOCK && process.platform !== 'win32')
-      this.rc.token_cache = false;
-
-    this.VAULT_ADDR = this.rc.vault_addr || process.env.VAULT_ADDR; //might be null
-    this.VAULT_TOKEN = process.env.VAULT_TOKEN;
 
     if(!this.VAULT_ADDR)
       console.error("Not bound to any vault");
 
   }
 
-  version() {
+  static Version() {
     return VERSION;
   }
 
-  async run() {
-    let args = process.argv.slice(process.argv.indexOf("run") + 1);
-    let env = await this.env(), cmd = args.shift();
-    await passthru(cmd, args, {env : {...process.env, ...env}}).catch((err) => (console.error("run failure : ", err), process.exit(1)));
-    process.exit();
+  async Run(command, ...args) {
+    const env = await this.Env();
+    const child = spawn(command, args, {env : {...process.env, ...env}, stdio : 'inherit'});
+    return new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', resolve);
+    });
   }
 
-  _token_cache_key() {
-    const {ssh_auth, jwt_auth} = this.rc;
-    return createHash('sha256').update(JSON.stringify({
-      vault_addr : trim(this.VAULT_ADDR || '', '/'), ssh_auth, jwt_auth,
-    })).digest('hex');
-  }
-
-  _token_cache_file() {
-    return path.join(os.homedir(), '.vauth', 'tokens', this._token_cache_key() + '.creds');
-  }
-
-  async _read_token_cache() {
-    if(this.rc.token_cache === false)
-      return;
-    try {
-      const armor = fs.readFileSync(this._token_cache_file(), 'utf8');
-      return JSON.parse(await decrypt(armor));
-    } catch(err) {}
-  }
-
-  async _save_cached_token(token, metadata) {
-    if(this.rc.token_cache === false)
-      return;
-    const ttl = metadata.ttl === undefined ? metadata.lease_duration : metadata.ttl;
-    const file = this._token_cache_file();
-    const temporary = file + '.next';
-    try {
-      const {lease_duration} = metadata;
-      const cache = {
-        token, lease_duration, renewable : metadata.renewable === true,
-        expires_at : ttl === 0 ? null : Date.now() + ttl * 1000,
-      };
-      fs.mkdirSync(path.dirname(file), {recursive : true, mode : 0o700});
-      const identity = process.env.VAUTH_USER_IDENTITY || process.env.VAUTH_USER_MAIL;
-      const armor = await encrypt(JSON.stringify(cache), identity);
-      fs.writeFileSync(temporary, armor, {mode : 0o600});
-      fs.renameSync(temporary, file);
-    } catch(err) {
-      // Cache failures must not prevent authentication or expose credentials.
-      console.error('Could not encrypt/write token cache; token not persisted');
-    } finally {
-      try { fs.unlinkSync(temporary); } catch(err) {}
-    }
-  }
-
-  _token_status(operation, metadata) {
-    const ttl = metadata.ttl === undefined ? metadata.lease_duration : metadata.ttl;
-    const validity = ttl === 0 ? 'valid indefinitely' : humanDiff(ttl, 2);
-    console.error('Vauth token: %s · %s · %s', operation, this.VAULT_ADDR, validity);
-  }
-
-  async connect(renew = false) {
-    const {ssh_auth, jwt_auth} = this.rc;
-    if(!ssh_auth && !jwt_auth) {
-      this.VAULT_TOKEN = undefined;
-      return;
-    }
-    if(this._connected && !renew)
-      return this.VAULT_TOKEN;
-    this._connected = false;
-
-    const cached = await this._read_token_cache();
-    let token = this.VAULT_TOKEN || (cached && cached.token);
-    const had_token = !!token;
-    let metadata, operation = 'reused';
-    if(renew || (cached && token === cached.token && cached.expires_at !== null && cached.expires_at <= Date.now()))
-      token = undefined;
-
-    if(token) {
-      try {
-        if(cached && cached.token === token) {
-          const ttl = cached.expires_at === null ? 0 : (cached.expires_at - Date.now()) / 1000;
-          metadata = {...cached, ttl};
-        } else {
-          metadata = await this._lookup_token(token);
-        }
-        const {ttl, renewable, lease_duration} = metadata;
-        if(ttl > 0 && ttl <= lease_duration / 3) {
-          if(renewable) {
-            metadata = await this._renew_token(token);
-            token = metadata.client_token;
-            operation = 'renewed';
-          } else {
-            token = undefined;
-          }
-        }
-      } catch(err) {
-        // Reauthenticate on invalid tokens, not network/server failures.
-        const status = err.res && err.res.statusCode;
-        if(![400, 403].includes(status))
-          throw err;
-        token = undefined;
-      }
-    }
-
-    if(!token) {
-      const agent_path = process.env.SSH_AUTH_SOCK || (process.platform === 'win32' ? 'pageant' : null);
-      if(ssh_auth && agent_path) {
-        metadata = await this._login_vault_ssh({...ssh_auth}, agent_path);
-      } else if(jwt_auth && jwt_auth.jwt) {
-        const {path, jwt, role} = jwt_auth;
-        metadata = await this._login_vault(path, {jwt, role});
-      }
-      token = metadata && metadata.client_token;
-      if(!token && (renew || had_token))
-        throw new Error('Could not login to vault: no authentication method available');
-      operation = 'generated';
-    }
-
-    if(token) {
-      if(operation !== 'reused' || !cached || cached.token !== token)
-        await this._save_cached_token(token, metadata);
-      this._token_status(operation, metadata);
-    }
-    this.VAULT_TOKEN = token;
-    this._connected = true;
-    return token;
-  }
-
-  async _renew_token(token) {
-    const remote_url = `${trim(this.VAULT_ADDR, '/')}/v1/auth/token/renew-self`;
-    const query = {...url.parse(remote_url), headers : {'x-vault-token' : token}, expect : 200, json : true};
-    const res = await request(query, {});
-    const auth = JSON.parse(String(await drain(res))).auth;
-    if(!auth.client_token || !Number.isFinite(auth.lease_duration) || auth.lease_duration < 0)
-      throw new Error('Invalid Vault token renewal response');
-    return auth;
-  }
-
-  async login(source = false, renew = false) {
-    await this.connect(renew);
+  async Login(source = false, renew = false) {
+    await this.Connect(renew);
     if(source) {
-      let env = {VAULT_TOKEN : this.VAULT_TOKEN};
-      this._publish_env(env);
-      process.exit();
+      let env = {VAULT_TOKEN : this.VAULT_TOKEN || ''};
+      this.PublishEnv(env);
     }
   }
 
-  _publish_env(env) {
+  PublishEnv(env) {
     let cmds = [];
     for(let [k, v] of Object.entries(env)) {
       cmds.push(`export ${k}=${shellEscape(v)}`);
@@ -255,8 +105,8 @@ class vvauth {
   }
 
 
-  async set(k, v) {
-    let {profile, database} = await this._vault_get_profile();
+  async Set(k, v) {
+    let {profile, database} = await this.GetProfile();
     if(!profile.VAUTH_USER_LOGIN)
       throw "Could not resolve VAUTH_USER_LOGIN from vault identity";
 
@@ -264,23 +114,24 @@ class vvauth {
     await this._vault_write(`private/${profile.VAUTH_USER_LOGIN}`, '.vauth_database', database);
   }
 
-  async unset(k) {
-    await this.set(k, undefined);
+  async Unset(k) {
+    await this.Set(k, undefined);
   }
 
-  async show() {
-    let {profile, database} = await this._vault_get_profile();
+  async Show() {
+    let {profile, database} = await this.GetProfile();
     return {...database, ...profile};
   }
 
-  async _vault_get_profile(renew = false) {
-    await this.connect(renew);
+  async GetProfile(renew = false) {
+    await this.Connect(renew);
 
-    if(!this.VAULT_TOKEN)
-      return {};
+    if(!this.VAULT_TOKEN || !this.VAULT_ADDR)
+      return {profile : {}, database : {}};
 
-    let {entity_id} = await this._lookup_token(this.VAULT_TOKEN);
-    let identity = await this._lookup_identity(this.VAULT_TOKEN, entity_id);
+    const {entity_id} = await this.LookupSelf(this.VAULT_TOKEN);
+    const {body} = await this.Request('GET', `identity/entity/id/${entity_id}`, this.VAULT_TOKEN);
+    const identity = JSON.parse(body).data;
     let profile = {...(identity.metadata)};
     let database = {};
 
@@ -290,12 +141,16 @@ class vvauth {
     return {entity_id, identity, profile, database};
   }
 
-  async _get_env(renew = false) {
-    let {profile, database} = await this._vault_get_profile(renew);
-    profile = {...database, ...profile};
-
-    let env = {}, secrets = {},
-      {git, map = {}, paths, path : mount = "secrets"} = this.rc.env || {};
+  async Env(source = false, renew = false) {
+    let env = {}, secrets = {}, profile = {};
+    let {git, map = {}, paths, path : mount = "secrets"} = this.config.env || {};
+    const localCredentials = this.config['ssh-agent-crypt'] && !this.rc.ssh_auth && !this.rc.jwt_auth;
+    if(localCredentials) {
+      await this.Connect(renew);
+    } else {
+      const current = await this.GetProfile(renew);
+      profile = {...current.database, ...current.profile};
+    }
 
     if(this.VAULT_TOKEN)
       env.VAULT_TOKEN = this.VAULT_TOKEN;
@@ -303,7 +158,7 @@ class vvauth {
       env.VAULT_ADDR = this.VAULT_ADDR;
 
 
-    let {'ssh-agent-crypt' : agent } = this.rc;
+    let {'ssh-agent-crypt' : agent } = this.config;
     if(agent) {
       const {path, identity} = agent;
       const body = await decrypt(fs.readFileSync(path), identity);
@@ -334,103 +189,52 @@ class vvauth {
       env[k] = replaceEnv(v, {env : process.env, profile, secrets});
     }
 
+    if(source) {
+      this.PublishEnv(env);
+      return;
+    }
     return env;
   }
 
-  async dotenv() {
-    const env = await this._get_env();
+  async Dotenv() {
+    const env = await this.Env();
 
     for(let [k, v] of Object.entries(env)) {
       process.stdout.write(`${k}=${String(v)}\n`);
       process.stderr.write(`export ${k}=[redacted]\n`);
     }
 
-    process.exit();
-  }
-
-  async env(source = false, renew = false) {
-    const env = await this._get_env(renew);
-
-    if(source) {
-      this._publish_env(env);
-      process.exit();
-    }
-
-    return env;
   }
 
   async _vault_read(mount, secret_path, optional = false) {
-    let remote_url = `${trim(this.VAULT_ADDR, '/')}/v1/${mount}/data/${trim(secret_path, '/')}`;
-    let query = {...url.parse(remote_url), headers : {'x-vault-token' : this.VAULT_TOKEN}};
-    let res = await request(query);
-    let body = String(await drain(res));
-
-    if(optional && res.statusCode == 404)
+    const {status, body} = await this.Request('GET', `${mount}/data/${trim(secret_path, '/')}`, this.VAULT_TOKEN, null, 0);
+    if(optional && status === 404)
       return {};
-
-    if(res.statusCode != 200)
-      throw `Could not read vault secret '${mount}/${trim(secret_path, '/')}' : ${body}`;
-
+    if(status !== 200)
+      throw new VauthLogin.HTTPError(status, body.toString());
     return get(JSON.parse(body), 'data.data');
   }
 
   async _vault_write(mount, secret_path, data) {
-    let remote_url = `${trim(this.VAULT_ADDR, '/')}/v1/${mount}/data/${trim(secret_path, '/')}`;
-    let query = {...url.parse(remote_url), headers : {'x-vault-token' : this.VAULT_TOKEN}, json : true};
-    let res = await request(query, {data});
-    let body = String(await drain(res));
-
-    if(res.statusCode != 200)
-      throw `Could not write vault secret '${mount}/${trim(secret_path, '/')}' : ${body}`;
-
-    return body ? JSON.parse(body) : {};
+    const {body} = await this.Request('POST', `${mount}/data/${trim(secret_path, '/')}`, this.VAULT_TOKEN, {data}, 200);
+    return body.length ? JSON.parse(body) : {};
   }
 
-
-  async _login_vault_ssh({path = 'ssh', role}, agent_path = process.env.SSH_AUTH_SOCK) {
-    logger.info("Trying to auth as '%s'", role);
-
-    let agent = createAgent(agent_path);
-    let keys = await promiser(chain => agent.getIdentities(chain));
-
-
-    let auth;
-    await eachLimit(keys, 1, async (pubKey) => {
-      if(auth)
-        return;
-
-      let remote_url = `${trim(this.VAULT_ADDR, '/')}/v1/auth/${path}/nonce`;
-      let query = {...url.parse(remote_url), json : true};
-      let res = await request(query);
-      let {data : {nonce}} = JSON.parse(String(await drain(res)));
-
-      const signature =  (await promiser(chain => agent.sign(pubKey, Buffer.from(nonce), {}, chain))).toString('base64');
-      const public_key = pubKey.type + ' ' + pubKey.getPublicSSH().toString('base64');
-      const payload = {public_key, role, nonce : Buffer.from(nonce).toString('base64'), signature};
-      try {
-        auth = await this._login_vault(path, payload);
-      } catch(err) {
-        logger.debug("ssh : invalid challenge for public key", pubKey.comment);
-      }
-    });
-
-
-    if(!auth || !auth.client_token)
-      throw `Could not login to vault`;
-
-    return auth;
-  }
   async _function_exists(alias) {
     let child = spawn('bash', ["-lc", `declare -F ${alias}`]);
     return new Promise(resolve => child.on('exit', resolve));
   }
 
-  async install() {
+  async Install() {
     const bashrc_path = path.resolve(os.homedir(), ".bashrc");
     let bashrc = fs.existsSync(bashrc_path) ? fs.readFileSync(bashrc_path, 'utf-8').trim() : '';
     if(await this._function_exists(FUNCTION_NAME) === 0) {
-      if(!await boolPrompt("Function already defined, override current definition? ", false))
-        return;
+      const prompt = readline.createInterface({input : process.stdin, output : process.stdout});
+      const answer = await new Promise(resolve => {
+        prompt.once('close', () => resolve(''));
+        prompt.question('Function already defined, override current definition?  [y/N] ', value => { resolve(value); prompt.close(); });
+      });
+      if(!/^y(es)?$/i.test(answer.trim())) return;
     }
     console.error("Installing function %s in %s", FUNCTION_NAME, bashrc_path);
 
@@ -438,51 +242,6 @@ class vvauth {
     console.error(`Installation ok, please \nsource ${bashrc_path}`);
   }
 
-  async _lookup_token(token) {
-    let remote_url = `${trim(this.VAULT_ADDR, '/')}/v1/auth/token/lookup-self`;
-    let query = {...url.parse(remote_url), headers : {'x-vault-token' : token}, expect : 200};
-    let res = await request(query);
-    let response = JSON.parse(await drain(res)).data;
-    if(!Number.isFinite(response.ttl) || response.ttl < 0)
-      throw new Error('Invalid Vault token TTL');
-    const cached = await this._read_token_cache();
-    if(cached && cached.token === token)
-      response.lease_duration = cached.lease_duration;
-    else
-      response.lease_duration = response.creation_ttl;
-    return response;
-  }
-
-  async _lookup_identity(token, id) {
-    let remote_url = `${trim(this.VAULT_ADDR, '/')}/v1/identity/entity/id/${id}`;
-    let query = {...url.parse(remote_url), headers : {'x-vault-token' : token}, expect : 200};
-    let res = await request(query);
-    return JSON.parse(String(await drain(res))).data;
-  }
-
-  async _update_identity(token, id, payload) {
-    let remote_url = `${trim(this.VAULT_ADDR, '/')}/v1/identity/entity/id/${id}`;
-    let query = {...url.parse(remote_url), headers : {'x-vault-token' : token}, expect : 204, json : true};
-    await request(query, payload);
-    return payload;
-  }
-
-
-
-  async _login_vault(path, payload) {
-    let remote_url = `${trim(this.VAULT_ADDR, '/')}/v1/auth/${path}/login`;
-    let query = {...url.parse(remote_url), json : true};
-    let res = await request(query, payload);
-    let response = String(await drain(res));
-
-    if(res.statusCode !== 200)
-      throw `Could not login to vault : ${response}`;
-
-    const auth = JSON.parse(response).auth;
-    if(!auth.client_token || !Number.isFinite(auth.lease_duration) || auth.lease_duration < 0)
-      throw new Error('Invalid Vault login response');
-    return auth;
-  }
 
 }
 
@@ -491,11 +250,54 @@ const shellEscape = (arg) =>  {
   return "'" + String(arg).replace(/'/g, '\'"\'"\'') + "'";
 };
 
-//ensure module is called directly, i.e. not required
-if(module.parent === null) {
-  let cmd = args.shift();
-  const output = process.argv.includes('--ir://json') ? '--ir://json' : '--ir://raw';
-  require('cnyks/lib/bundle')(vvauth, null, cmd ? [`--ir://run=${cmd}`, output] : []);
+// Command spelling is a CLI concern, not an SDK compatibility alias.
+async function main() {
+  const argv = process.argv.slice(2);
+  if(argv[0] === 'run') {
+    const args = argv.slice(1);
+    if(args[0] === '--') args.shift();
+    const command = args.shift();
+    if(!command) throw new Error('Missing command for run');
+    process.exitCode = await new Vvauth().Run(command, ...args);
+    return;
+  }
+  const {args, dict} = parseArgs(argv);
+  const command = args.shift() || (dict.version ? 'version' : undefined);
+  if(command === 'version') {
+    process.stdout.write(Vvauth.Version() + '\n');
+    return;
+  }
+  if(!['env', 'login', 'connect', 'dotenv', 'show', 'set', 'unset', 'install'].includes(command))
+    throw new Error('Usage: vauth <env|login|connect|run|dotenv|show|set|unset|install|version>');
+  if(Object.hasOwn(dict, 'ir://run'))
+    throw new Error('Unsupported flag --ir://run');
+  const param = (index, name) => index < args.length ? args[index] : dict[name];
+  const enabled = value => value !== undefined && !['', 'false', '0'].includes(String(value).toLowerCase());
+  const client = new Vvauth();
+  let result;
+  switch(command) {
+    case 'env': result = await client.Env(enabled(param(0, 'source')), enabled(param(1, 'renew'))); break;
+    case 'login': await client.Login(enabled(param(0, 'source')), enabled(param(1, 'renew'))); return;
+    case 'connect': result = await client.Connect(enabled(param(0, 'renew'))); break;
+    case 'dotenv': await client.Dotenv(); return;
+    case 'show': result = await client.Show(); break;
+    case 'set':
+      if(param(0, 'k') === undefined || param(1, 'v') === undefined) throw new Error('Missing parameter --k or --v');
+      await client.Set(param(0, 'k'), param(1, 'v')); return;
+    case 'unset':
+      if(param(0, 'k') === undefined) throw new Error('Missing parameter --k');
+      await client.Unset(param(0, 'k')); return;
+    case 'install': await client.Install(); return;
+  }
+  if(result !== undefined && result !== '') {
+    if(Object.hasOwn(dict, 'ir://json') || typeof result !== 'string')
+      process.stdout.write(JSON.stringify(result) + (Object.hasOwn(dict, 'ir://json') ? '' : '\n'));
+    else
+      process.stdout.write(result);
+  }
 }
 
-module.exports = vvauth;
+if(require.main === module)
+  main().catch(err => { console.error(err instanceof Error ? err.message : String(err)); process.exitCode = 1; });
+
+module.exports = Vvauth;

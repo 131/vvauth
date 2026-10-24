@@ -28,7 +28,7 @@ error, since names reach `export KEY=` unescaped. Flags may replace positionals 
 | `install` | Append the `venv` shell function to `~/.bashrc` | nothing |
 | `version` (`--version`) | Build version | one line |
 
-Diagnostics (`Vauth token: generated · https://vault · 12h`, `export K=[redacted]`,
+Diagnostics (`Vauth token: generated · 12h`, `export K=[redacted]`,
 errors) go to stderr; stdout is machine-readable for every command. Exit code is
 `0` on success, `1` on error (or the child's code for `run`). `--renew` discards
 the cached token and authenticates again.
@@ -45,7 +45,7 @@ vauth run -- terraform plan
 | --- | --- |
 | `VAUTHRC` | Explicit `.vauthrc` path; else `./.vauthrc`, then `~/.vauthrc` |
 | `VAULT_ADDR` | Fallback when `.vauthrc` has no `vault_addr` |
-| `VAULT_TOKEN` | Used as is when set (looked up, renewed in the last third of its lease) |
+| `VAULT_TOKEN` | Returned offline by Connect without renewal/persistence; LookupSelf validates online when the profile is requested |
 | `SSH_AUTH_SOCK` | Agent for `ssh_auth` and for the token cache; on Windows, else Pageant (≥ 0.75), else the OpenSSH pipe |
 | `VAUTH_USER_IDENTITY`, `VAUTH_USER_MAIL` | Agent key selector for the token cache (first key otherwise) |
 | `CI` | When set, `env.gitlab` does not derive `CI_PROJECT_*` from `git remote get-url origin` |
@@ -59,15 +59,25 @@ armored with [ssh-agent-crypt](https://github.com/131/ssh-agent-crypt);
 ```js
 const Vauth = require('vvauth');
 const vauth = new Vauth();             // reads .vauthrc and process.env
-const token = await vauth.connect();   // connect(renew = false)
-const env   = await vauth.env();       // env(source = false, renew = false) → object
-await vauth.login(false, true);        // login(source, renew)
-const profile = await vauth.show();    // {...database, ...metadata}
-await vauth.set('KEY', 'value'); await vauth.unset('KEY');
+const token = await vauth.Connect();   // Connect(renew = false)
+const env   = await vauth.Env();       // Env(source = false, renew = false) → object
+await vauth.Login(false, true);        // login(source, renew)
+const profile = await vauth.Show();    // {...database, ...metadata}
+await vauth.Set('KEY', 'value'); await vauth.Unset('KEY');
 ```
 
-`env(true)`, `login(true)` and `dotenv()` write to stdout and exit the
-process; `run()` reads `process.argv`. Failures reject.
+Node extends the vauth-login client directly. `Connect`, `LookupSelf` and
+`Request` are inherited, not forwarded through compatibility wrappers.
+`GetProfile`, `Env`, `Show`, `Set`, `Unset`, `Login`, `Dotenv`, `Run` and
+`PublishEnv` own the environment/profile behavior. `Version()` is static.
+`rc`/`rc_file` and token/transport state belong to vauth-login; `config` contains
+only `env` and `ssh-agent-crypt` settings.
+
+`Env(true)`, `Login(true)`, `Dotenv()` and `PublishEnv()` write to stdout but do
+not exit the SDK caller. `Run(command, ...args)` returns the child's exit code;
+launch/authentication errors reject. Public methods use PascalCase without old
+SDK aliases. The CLI independently keeps its lowercase commands and flags,
+without reflecting inherited HTTP methods into CLI commands.
 
 ## Go module
 
@@ -84,12 +94,20 @@ code, err := v.Run("terraform", "plan")
 v.PublishEnv(env)                      // export lines on stdout, redacted echo on stderr
 ```
 
-`Vauth` fields are public for embedding: `RC`, `VaultAddr`, `VaultToken`,
-`Agent` (agent address, `sshagentcrypt.DefaultAgentAddress()` by default),
-`TokenCache`, `CacheDir`, `HomeDir`, `Environ`, `Stdout`/`Stderr`/`Stdin`,
-`Now`, `HTTPClient`. `LocateRC`, `ParseRC`, `ReplaceEnv`, `TokenCacheKey`,
-`TokenCacheFile`, `ShellEscape` and `FunctionExists` are exported for tools
-sharing the contract.
+`Vauth` embeds `*vauthlogin.Vauth`; `Connect`, `LookupSelf` and `Request`,
+authentication `RC`, `VaultAddr`, `VaultToken`, `Agent`, `TokenCache`, `CacheDir`,
+`HomeDir`, `Environ`, `Stderr`, `Now` and `HTTPClient` are owned by that client.
+Use `New()` or supply the embedded client explicitly for isolated programmatic
+use. `Config` holds only `Env`/`AgentCrypt`; `Stdout`/`Stdin` belong to vvauth.
+`ParseConfig`, `ReplaceEnv`, `ShellEscape` and `FunctionExists` support B's work.
+There is no second auth parser, token lifecycle, cache implementation or HTTP
+transport in vvauth.
+
+The SDK keeps language-native conventions: promises/throws in Node,
+values plus errors in Go. Node `Env(source, renew)` can publish directly;
+Go `Env(renew)` returns an ordered map for `PublishEnv`. CLI `--ir://json`
+outputs JSON without a trailing newline in both implementations. JSON object
+key order is not part of the profile (`show`) contract.
 
 ## Tests
 

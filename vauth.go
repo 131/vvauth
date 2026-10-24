@@ -1,6 +1,5 @@
-// Package vvauth logs into HashiCorp Vault (ssh-agent challenge or jwt),
-// caches the token with ssh-agent-crypt and resolves the environment
-// declared by .vauthrc. It is the Go counterpart of the vvauth npm package.
+// Package vvauth resolves the environment and profile declared by .vauthrc.
+// Authentication, token caching and HTTP transport belong to vauth-login.
 package vvauth
 
 import (
@@ -9,15 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 
 	sshagentcrypt "github.com/131/ssh-agent-crypt"
+	vauthlogin "github.com/131/vauth-login"
 	"github.com/Masterminds/semver/v3"
 )
 
@@ -39,34 +37,10 @@ const FunctionDecl = `function ` + FunctionName + `() { source <(/usr/bin/env va
 // Vauth is a configured client. New builds one from the process environment;
 // fields may be set directly for programmatic use.
 type Vauth struct {
-	RC         RC
-	VaultAddr  string
-	VaultToken string
-	// Agent is the ssh-agent address; empty disables ssh authentication.
-	Agent string
-	// TokenCache enables the on-disk token cache in CacheDir.
-	TokenCache bool
-	CacheDir   string
-	HomeDir    string
-	// Environ is the process environment snapshot used for macros.
-	Environ map[string]string
-	// Stdout/Stderr/Stdin default to the process streams.
-	Stdout     io.Writer
-	Stderr     io.Writer
-	Stdin      io.Reader
-	HTTPClient *http.Client
-	// Now overrides the clock (tests).
-	Now func() time.Time
-
-	connected bool
-}
-
-// token is an established token with its remaining validity.
-type token struct {
-	Value         string
-	TTL           float64 // seconds; 0 means unlimited
-	LeaseDuration int64
-	Renewable     bool
+	*vauthlogin.Vauth
+	Config Config
+	Stdout io.Writer
+	Stdin  io.Reader
 }
 
 // CheckProjectVersion fails when manifest (a package.json) declares a
@@ -101,55 +75,32 @@ func CheckProjectVersion(manifest, version string) error {
 	return nil
 }
 
-// Environ converts os.Environ() into a map.
-func Environ() map[string]string {
-	environ := map[string]string{}
-	for _, entry := range os.Environ() {
-		if key, value, ok := strings.Cut(entry, "="); ok {
-			environ[key] = value
-		}
-	}
-	return environ
-}
-
-// New loads the configuration from the environment and the first .vauthrc
-// found (VAUTHRC, ./.vauthrc, ~/.vauthrc).
+// New loads authentication through vauth-login, then the environment/profile
+// configuration from the same selected .vauthrc.
 func New() (*Vauth, error) {
-	environ := Environ()
-	home, _ := os.UserHomeDir()
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
 	if err := CheckProjectVersion(filepath.Join(cwd, "package.json"), Version); err != nil {
 		return nil, err
 	}
-	v := &Vauth{
-		Agent:      sshagentcrypt.DefaultAgentAddress(),
-		TokenCache: true,
-		HomeDir:    home,
-		CacheDir:   filepath.Join(home, ".vauth", "tokens"),
-		Environ:    environ,
+	login, err := vauthlogin.New()
+	if err != nil {
+		return nil, err
 	}
-	if file := LocateRC(environ, cwd, home); file != "" {
-		body, err := os.ReadFile(file)
+	v := &Vauth{Vauth: login}
+	if login.RCFile != "" {
+		body, err := os.ReadFile(login.RCFile)
 		if err != nil {
 			return nil, err
 		}
-		rc, err := ParseRC(body, file, environ)
+		config, err := ParseConfig(body, login.RCFile, login.Environ)
 		if err != nil {
 			return nil, err
 		}
-		v.RC = *rc
+		v.Config = *config
 	}
-	if v.RC.TokenCache != nil && !*v.RC.TokenCache {
-		v.TokenCache = false
-	}
-	if v.Agent == "" {
-		v.TokenCache = false
-	}
-	v.VaultAddr = v.RC.VaultAddr
-	if v.VaultAddr == "" {
-		v.VaultAddr = environ["VAULT_ADDR"]
-	}
-	v.VaultToken = environ["VAULT_TOKEN"]
 	if v.VaultAddr == "" {
 		fmt.Fprintln(v.stderr(), "Not bound to any vault")
 	}
@@ -175,140 +126,6 @@ func (v *Vauth) stdin() io.Reader {
 		return v.Stdin
 	}
 	return os.Stdin
-}
-
-func (v *Vauth) now() time.Time {
-	if v.Now != nil {
-		return v.Now()
-	}
-	return time.Now()
-}
-
-func (v *Vauth) debug(format string, args ...any) {
-	if strings.Contains(v.Environ["DEBUG"], "vvauth") {
-		fmt.Fprintf(v.stderr(), "vvauth "+format+"\n", args...)
-	}
-}
-
-func (v *Vauth) tokenStatus(operation string, token *token) {
-	validity := "valid indefinitely"
-	if token.TTL != 0 {
-		validity = HumanDiff(token.TTL, 2)
-	}
-	fmt.Fprintf(v.stderr(), "Vauth token: %s · %s · %s\n", operation, v.VaultAddr, validity)
-}
-
-// Connect establishes VaultToken: the environment token, then the cached one
-// (renewed in the last third of its lease), then a new login. With renew, a
-// new login is forced. Without an authentication method, no token is used.
-func (v *Vauth) Connect(renew bool) (string, error) {
-	if v.RC.SSHAuth == nil && v.RC.JWTAuth == nil {
-		v.VaultToken = ""
-		return "", nil
-	}
-	if v.connected && !renew {
-		return v.VaultToken, nil
-	}
-	v.connected = false
-
-	cached := v.readTokenCache()
-	current := v.VaultToken
-	if current == "" && cached != nil {
-		current = cached.Token
-	}
-	hadToken := current != ""
-	operation := "reused"
-	now := v.now().UnixMilli()
-	if renew || (cached != nil && current == cached.Token && cached.ExpiresAt != nil && *cached.ExpiresAt <= now) {
-		current = ""
-	}
-
-	var established *token
-	if current != "" {
-		established = &token{Value: current}
-		if cached != nil && cached.Token == current {
-			established.LeaseDuration, established.Renewable = cached.LeaseDuration, cached.Renewable
-			if cached.ExpiresAt != nil {
-				established.TTL = float64(*cached.ExpiresAt-now) / 1000
-			}
-		} else {
-			info, lease, err := v.lookupToken(current)
-			if err := reauthenticable(err); err != nil {
-				return "", err
-			}
-			if err != nil {
-				established = nil
-			} else {
-				established.TTL, established.Renewable, established.LeaseDuration = info.TTL, info.Renewable, lease
-			}
-		}
-		if established != nil && established.TTL > 0 && established.TTL <= float64(established.LeaseDuration)/3 {
-			if established.Renewable {
-				renewed, err := v.renewToken(current)
-				if err := reauthenticable(err); err != nil {
-					return "", err
-				}
-				if err != nil {
-					established = nil
-				} else {
-					established = fromAuth(renewed)
-					operation = "renewed"
-				}
-			} else {
-				established = nil
-			}
-		}
-	}
-
-	if established == nil {
-		var granted *auth
-		var err error
-		if v.RC.SSHAuth != nil && v.Agent != "" {
-			granted, err = v.loginVaultSSH(v.RC.SSHAuth)
-		} else if v.RC.JWTAuth != nil && v.RC.JWTAuth.JWT != "" {
-			path := v.RC.JWTAuth.Path
-			if path == "" {
-				path = "jwt"
-			}
-			granted, err = v.loginVault(path, map[string]string{"jwt": v.RC.JWTAuth.JWT, "role": v.RC.JWTAuth.Role})
-		}
-		if err != nil {
-			return "", err
-		}
-		if granted == nil {
-			if renew || hadToken {
-				return "", errors.New("Could not login to vault: no authentication method available")
-			}
-		} else {
-			established = fromAuth(granted)
-		}
-		operation = "generated"
-	}
-
-	v.VaultToken = ""
-	if established != nil {
-		if operation != "reused" || cached == nil || cached.Token != established.Value {
-			v.saveTokenCache(established)
-		}
-		v.tokenStatus(operation, established)
-		v.VaultToken = established.Value
-	}
-	v.connected = true
-	return v.VaultToken, nil
-}
-
-// reauthenticable returns err unless it is an invalid token (400/403), in
-// which case a new login is appropriate.
-func reauthenticable(err error) error {
-	var failure *HTTPError
-	if err == nil || (errors.As(err, &failure) && (failure.Status == 400 || failure.Status == 403)) {
-		return nil
-	}
-	return err
-}
-
-func fromAuth(granted *auth) *token {
-	return &token{Value: granted.ClientToken, TTL: float64(granted.LeaseDuration), LeaseDuration: granted.LeaseDuration, Renewable: granted.Renewable}
 }
 
 // Profile is the Vault identity of the token: entity metadata and the
@@ -338,22 +155,30 @@ func (v *Vauth) GetProfile(renew bool) (*Profile, error) {
 		return nil, err
 	}
 	profile := &Profile{Metadata: map[string]any{}, Database: map[string]any{}}
-	if v.VaultToken == "" {
+	if v.VaultToken == "" || v.VaultAddr == "" {
 		return profile, nil
 	}
-	info, _, err := v.lookupToken(v.VaultToken)
+	info, err := v.LookupSelf(v.VaultToken)
 	if err != nil {
 		return nil, err
 	}
-	metadata, err := v.lookupIdentity(v.VaultToken, info.EntityID)
+	_, response, err := v.Request("GET", "identity/entity/id/"+info.EntityID, v.VaultToken, nil, 200)
 	if err != nil {
 		return nil, err
+	}
+	var identity struct {
+		Data struct {
+			Metadata map[string]any `json:"metadata"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response, &identity); err != nil {
+		return nil, fmt.Errorf("Invalid identity response: %w", err)
 	}
 	profile.EntityID = info.EntityID
-	if metadata != nil {
-		profile.Metadata = metadata
+	if identity.Data.Metadata != nil {
+		profile.Metadata = identity.Data.Metadata
 	}
-	if login, _ := stringify(metadata["VAUTH_USER_LOGIN"]); login != "" {
+	if login, _ := stringify(profile.Metadata["VAUTH_USER_LOGIN"]); login != "" {
 		database, err := v.vaultRead("private/"+login, ".vauth_database", true)
 		if err != nil {
 			return nil, err
@@ -404,9 +229,22 @@ func (v *Vauth) Show() (map[string]any, error) {
 // Env resolves the environment declared by .vauthrc: VAULT_TOKEN and
 // VAULT_ADDR, then env.map with $${env|profile|secrets.X} expanded.
 func (v *Vauth) Env(renew bool) (*OrderedMap, error) {
-	profile, err := v.GetProfile(renew)
-	if err != nil {
-		return nil, err
+	config := v.Config.Env
+	if config == nil {
+		config = &EnvConfig{}
+	}
+	profile := &Profile{Metadata: map[string]any{}, Database: map[string]any{}}
+	localCredentials := v.Config.AgentCrypt != nil && v.RC.SSHAuth == nil && v.RC.JWTAuth == nil
+	if localCredentials {
+		if _, err := v.Connect(renew); err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		profile, err = v.GetProfile(renew)
+		if err != nil {
+			return nil, err
+		}
 	}
 	env := &OrderedMap{}
 	if v.VaultToken != "" {
@@ -416,22 +254,18 @@ func (v *Vauth) Env(renew bool) (*OrderedMap, error) {
 		env.Set("VAULT_ADDR", v.VaultAddr)
 	}
 
-	config := v.RC.Env
-	if config == nil {
-		config = &EnvConfig{}
-	}
 	secrets := map[string]any{}
-	if v.RC.AgentCrypt != nil {
-		armor, err := os.ReadFile(v.RC.AgentCrypt.Path)
+	if v.Config.AgentCrypt != nil {
+		armor, err := os.ReadFile(v.Config.AgentCrypt.Path)
 		if err != nil {
 			return nil, err
 		}
-		body, err := sshagentcrypt.Decrypt(armor, v.RC.AgentCrypt.Identity, v.agentOptions())
+		body, err := sshagentcrypt.Decrypt(armor, v.Config.AgentCrypt.Identity, &sshagentcrypt.Options{AgentSocket: v.Agent})
 		if err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(body, &secrets); err != nil {
-			return nil, fmt.Errorf("Invalid ssh-agent-crypt payload %s: %w", v.RC.AgentCrypt.Path, err)
+			return nil, fmt.Errorf("Invalid ssh-agent-crypt payload %s: %w", v.Config.AgentCrypt.Path, err)
 		}
 	}
 

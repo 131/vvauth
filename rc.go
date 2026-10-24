@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -15,65 +14,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// RC is the parsed .vauthrc, after $${env.X} expansion.
-type RC struct {
-	VaultAddr  string      `yaml:"vault_addr"`
-	SSHAuth    *SSHAuth    `yaml:"ssh_auth"`
-	JWTAuth    *JWTAuth    `yaml:"jwt_auth"`
-	TokenCache *bool       `yaml:"token_cache"`
+// Config contains only environment/profile settings; authentication is
+// parsed and owned by vauth-login.
+type Config struct {
 	AgentCrypt *AgentCrypt `yaml:"ssh-agent-crypt"`
 	Env        *EnvConfig  `yaml:"env"`
-
-	// authKey is the JSON of {ssh_auth, jwt_auth} in document order, as
-	// JSON.stringify would render them: it isolates the token cache.
-	authKey string
-}
-
-// AuthKey renders ssh_auth and jwt_auth as JSON members, in the order of the
-// parsed document. Programmatic configurations are rendered from the structs.
-func (rc *RC) AuthKey() string {
-	if rc.authKey != "" {
-		return rc.authKey
-	}
-	var members []string
-	if rc.SSHAuth != nil {
-		members = append(members, `"ssh_auth":`+jsonMembers([][2]string{{"path", rc.SSHAuth.Path}, {"role", rc.SSHAuth.Role}}))
-	}
-	if rc.JWTAuth != nil {
-		members = append(members, `"jwt_auth":`+jsonMembers([][2]string{{"path", rc.JWTAuth.Path}, {"jwt", rc.JWTAuth.JWT}, {"role", rc.JWTAuth.Role}}))
-	}
-	return strings.Join(members, ",")
-}
-
-func jsonMembers(pairs [][2]string) string {
-	var out bytes.Buffer
-	out.WriteByte('{')
-	for _, pair := range pairs {
-		if pair[1] == "" {
-			continue
-		}
-		if out.Len() > 1 {
-			out.WriteByte(',')
-		}
-		out.Write(jsonString(pair[0]))
-		out.WriteByte(':')
-		out.Write(jsonString(pair[1]))
-	}
-	out.WriteByte('}')
-	return out.String()
-}
-
-// SSHAuth configures the Vault ssh auth plugin (nonce challenge).
-type SSHAuth struct {
-	Path string `yaml:"path"`
-	Role string `yaml:"role"`
-}
-
-// JWTAuth configures a Vault jwt login.
-type JWTAuth struct {
-	Path string `yaml:"path"`
-	JWT  string `yaml:"jwt"`
-	Role string `yaml:"role"`
 }
 
 // AgentCrypt points to a local ssh-agent-crypt armored JSON file whose keys
@@ -244,54 +189,6 @@ func walk(node *yaml.Node, process func(string) string) {
 	}
 }
 
-// jsonNode renders a YAML subtree as JSON.stringify would after yaml.parse.
-func jsonNode(node *yaml.Node, out *bytes.Buffer) {
-	switch node.Kind {
-	case yaml.DocumentNode, yaml.AliasNode:
-		if node.Kind == yaml.AliasNode {
-			jsonNode(node.Alias, out)
-		} else if len(node.Content) > 0 {
-			jsonNode(node.Content[0], out)
-		}
-	case yaml.MappingNode:
-		out.WriteByte('{')
-		for i := 0; i+1 < len(node.Content); i += 2 {
-			if i > 0 {
-				out.WriteByte(',')
-			}
-			out.Write(jsonString(node.Content[i].Value))
-			out.WriteByte(':')
-			jsonNode(node.Content[i+1], out)
-		}
-		out.WriteByte('}')
-	case yaml.SequenceNode:
-		out.WriteByte('[')
-		for i, child := range node.Content {
-			if i > 0 {
-				out.WriteByte(',')
-			}
-			jsonNode(child, out)
-		}
-		out.WriteByte(']')
-	case yaml.ScalarNode:
-		switch node.Tag {
-		case "!!int", "!!float", "!!bool":
-			var value any
-			if node.Decode(&value) == nil {
-				if text, ok := stringify(value); ok {
-					out.WriteString(text)
-					return
-				}
-			}
-			out.Write(jsonString(node.Value))
-		case "!!null":
-			out.WriteString("null")
-		default:
-			out.Write(jsonString(node.Value))
-		}
-	}
-}
-
 // jsonString encodes like JSON.stringify (no HTML escaping).
 func jsonString(value string) []byte {
 	var out bytes.Buffer
@@ -319,57 +216,37 @@ func mappingValue(node *yaml.Node, key string) *yaml.Node {
 	return nil
 }
 
-// LocateRC returns the first existing configuration file among VAUTHRC,
-// ./.vauthrc and ~/.vauthrc, or an empty string.
-func LocateRC(environ map[string]string, cwd, home string) string {
-	candidates := []string{environ["VAUTHRC"], filepath.Join(cwd, ".vauthrc"), filepath.Join(home, ".vauthrc")}
-	for _, candidate := range candidates {
-		if candidate == "" {
-			continue
-		}
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-	}
-	return ""
-}
-
-// ParseRC parses a .vauthrc body and expands its $${env.X} macros against
-// environ. With env.gitlab outside CI, CI_PROJECT_* variables are derived
-// from the git remote of the directory holding the file.
-func ParseRC(body []byte, file string, environ map[string]string) (*RC, error) {
+// ParseConfig expands environment/profile sections. With env.gitlab outside
+// CI, CI_PROJECT_* variables come from the selected file's Git remote.
+func ParseConfig(body []byte, file string, environ map[string]string) (*Config, error) {
 	var document yaml.Node
 	if err := yaml.Unmarshal(body, &document); err != nil {
 		return nil, fmt.Errorf("Could not parse %s: %w", file, err)
 	}
 	if len(document.Content) == 0 {
-		return &RC{authKey: "{}"}, nil
+		return &Config{}, nil
 	}
+	root := document.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("Could not parse %s: expected a mapping", file)
+	}
+	var content []*yaml.Node
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		switch root.Content[i].Value {
+		case "env", "ssh-agent-crypt":
+			content = append(content, root.Content[i], root.Content[i+1])
+		}
+	}
+	root.Content = content
 	if gitlab := mappingValue(mappingValue(&document, "env"), "gitlab"); gitlab != nil && truthy(gitlab) && environ["CI"] == "" {
 		environ = withGitLabProject(environ, filepath.Dir(file))
 	}
-	walk(&document, func(value string) string {
-		return ReplaceEnv(value, Lookup{"env": environ})
-	})
-	rc := RC{}
-	if err := document.Decode(&rc); err != nil {
+	walk(&document, func(value string) string { return ReplaceEnv(value, Lookup{"env": environ}) })
+	var config Config
+	if err := document.Decode(&config); err != nil {
 		return nil, fmt.Errorf("Could not parse %s: %w", file, err)
 	}
-	var key bytes.Buffer
-	for i, name := range []string{"ssh_auth", "jwt_auth"} {
-		node := mappingValue(&document, name)
-		if node == nil || node.Tag == "!!null" {
-			continue
-		}
-		if i > 0 && key.Len() > 0 {
-			key.WriteByte(',')
-		}
-		key.Write(jsonString(name))
-		key.WriteByte(':')
-		jsonNode(node, &key)
-	}
-	rc.authKey = key.String()
-	return &rc, nil
+	return &config, nil
 }
 
 func truthy(node *yaml.Node) bool {
