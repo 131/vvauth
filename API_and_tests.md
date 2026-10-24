@@ -99,7 +99,7 @@ authentication `RC`, `VaultAddr`, `VaultToken`, `Agent`, `TokenCache`, `CacheDir
 `HomeDir`, `Environ`, `Stderr`, `Now` and `HTTPClient` are owned by that client.
 Use `New()` or supply the embedded client explicitly for isolated programmatic
 use. `Config` holds only `Env`/`AgentCrypt`; `Stdout`/`Stdin` belong to vvauth.
-`ParseConfig`, `ReplaceEnv`, `ShellEscape` and `FunctionExists` support B's work.
+`ParseConfig`, `ReplaceEnv`, `ShellEscape` and `FunctionExists` support environment and shell operations.
 There is no second auth parser, token lifecycle, cache implementation or HTTP
 transport in vvauth.
 
