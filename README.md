@@ -86,9 +86,12 @@ exports. Neither implementation prompts to trust an unknown project Vault.
 
 ## Security assessments
 
-[Claude](SECURITY_AUDIT_fable-5.1.md) and
+[Claude](SECURITY_AUDIT_claude-opus-5-5.md) and
 [Sol](SECURITY_AUDIT_gpt-6.1-sol.md) reports identify their exact source commit,
 checks and limitations. They are independent source reviews, not certification.
+[Coordination and open risks](SECURITY_AUDIT_COORDINATION.md) distinguish
+reviewer limitations from host validation; [provenance](SECURITY_AUDIT_PROVENANCE.json)
+records the exact source, models and prompt/report hashes.
 
 ## Credits
 

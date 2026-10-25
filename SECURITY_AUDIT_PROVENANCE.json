@@ -1,0 +1,35 @@
+{
+  "sourceCommit": "f368802700f03c8b632bbacefbfc71dbfaae04f4",
+  "date": "2026-10-25",
+  "method": "Fresh independent source-only codex exec sessions; no previous reports or coordinator history as inputs",
+  "reviews": [
+    {
+      "profile": "claude",
+      "actualModel": "claude-opus-5-5",
+      "exit": 0,
+      "command": "codex -p claude exec --ephemeral --sandbox read-only -c 'web_search=\"disabled\"' --output-last-message /mnt/d/tmp/tasks/FLEURENT-09/audits/f368802/claude-report.md - < /mnt/d/tmp/tasks/FLEURENT-09/audits/f368802/claude-input.txt",
+      "hashes": {
+        "input.txt": "f30a9fe080b37646dfd1c0fc18318fa6a30e1db24847b10c1240292fe63a7c1c",
+        "report.md": "526c89b5874b420a1229c9414e461028b2012dd5cdcc7ab7f62635841a71aade",
+        "exec.log": "e8187235115d563e7e9017155b34dd310970f90b746075e7242f3138440368b6"
+      },
+      "output": "SECURITY_AUDIT_claude-opus-5-5.md",
+      "inputExclusionsChecked": true,
+      "modelCheckedAgainstExecutionHeader": true
+    },
+    {
+      "profile": "codex",
+      "actualModel": "gpt-6.1-sol_codeassist",
+      "exit": 0,
+      "command": "codex exec --ephemeral --sandbox read-only -c 'web_search=\"disabled\"' --output-last-message /mnt/d/tmp/tasks/FLEURENT-09/audits/f368802/codex-report.md - < /mnt/d/tmp/tasks/FLEURENT-09/audits/f368802/codex-input.txt",
+      "hashes": {
+        "input.txt": "7617ec6debad726eed09829efbbd63a180660af91fc1f393927460193094179a",
+        "report.md": "60c4fc1f72df58c96ece263d1dc4d64dec619301116e7bdf459bd02f83165400",
+        "exec.log": "10b1ae8df60c50acf8a4cd66ce73aaa813aac583eb48304d40144186afc2becc"
+      },
+      "output": "SECURITY_AUDIT_gpt-6.1-sol.md",
+      "inputExclusionsChecked": true,
+      "modelCheckedAgainstExecutionHeader": true
+    }
+  ]
+}
