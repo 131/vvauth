@@ -77,6 +77,10 @@ disables disk caching. SSH uses `SSH_AUTH_SOCK`, or native Windows Pageant/OpenS
 pipe discovery. Review a project-selected Vault before vouching for it in the
 home configuration or environment.
 
+Review and trust the project configuration before sourcing it. It controls
+the exported environment and local file decryption; the Vault-address check
+is not a sandbox for hostile configuration files.
+
 Tokens and resolved secrets are credentials: do not log them or store plaintext
 exports. Neither implementation prompts to trust an unknown project Vault.
 

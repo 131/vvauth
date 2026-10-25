@@ -105,6 +105,15 @@ Configuration operates on JSON-compatible values rather than round-tripping
 RC through a YAML tree. Walking preserves keys and the raw RC snapshot;
 `env.map` validation and scalar-to-string conversion remain in vvauth.
 
+## Configuration trust boundary
+
+The selected configuration controls exported variable names/values and which
+local armored files are decrypted. Name validation enforces shell syntax,
+not a variable allowlist. Review and trust a project configuration before
+sourcing it with `venv`; this tool is not a sandbox for hostile configurations.
+The Vault-origin guard checks authentication destinations, not every effect
+of the environment exported into the calling shell.
+
 ## Verification
 
 ```bash
