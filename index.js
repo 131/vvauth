@@ -6,8 +6,8 @@ const fs    = require('fs');
 const path  = require('path');
 const {decrypt} = require('ssh-agent-crypt');
 const VauthLogin = require('vauth-login');
-const parseArgs = require('nyks/process/parseArgs');
-const {spawn, execFileSync} = require('child_process');
+const {spawn} = require('child_process');
+const exec = require('nyks/child_process/exec');
 const readline = require('readline');
 
 const semver     = require('semver');
@@ -40,28 +40,8 @@ class Vvauth extends VauthLogin {
     super();
 
     const rc = this.RC;
-    let env = process.env;
-
-    if(get(rc, 'env.gitlab') && !env.CI) {
-      try {
-        let remote_url = String(execFileSync('git', ['remote', 'get-url', 'origin'], {stdio : ['ignore', 'pipe', 'ignore']})).trim();
-        let match = remote_url.match(/^[^@]+@[^:]+:(.+)$/);
-        let CI_PROJECT_PATH = match ? match[1] : trim(new URL(remote_url).pathname, '/');
-        CI_PROJECT_PATH = trim(CI_PROJECT_PATH, '/').replace(/\.git$/, '');
-
-        if(CI_PROJECT_PATH) {
-          let parts = CI_PROJECT_PATH.split('/');
-          let CI_PROJECT_NAME = parts.pop();
-          let CI_PROJECT_NAMESPACE = parts.join('/');
-          let CI_PROJECT_PATH_SLUG = String(CI_PROJECT_PATH).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-
-          env = {...env, CI_PROJECT_PATH, CI_PROJECT_NAME, CI_PROJECT_NAMESPACE, CI_PROJECT_PATH_SLUG};
-        }
-      } catch(err) {}
-    }
-
     const config = Object.fromEntries(['env', 'ssh-agent-crypt'].filter(key => rc && Object.hasOwn(rc, key)).map(key => [key, rc[key]]));
-    this.config = walk(structuredClone(config), v => replaceEnv(v, {env}));
+    this.config = walk(structuredClone(config), v => replaceEnv(v, {env : process.env}));
 
 
     if(!this.VAULT_ADDR)
@@ -71,6 +51,22 @@ class Vvauth extends VauthLogin {
 
   static Version() {
     return VERSION;
+  }
+
+  async Gitlab() {
+    const remote = String(await exec('git', ['remote', 'get-url', 'origin'], {stdio : ['ignore', 'pipe', 'ignore']})).trim();
+    const match = remote.includes('://') ? null : remote.match(/^[^@]+@[^:]+:(.+)$/);
+    const project = trim(match ? match[1] : new URL(remote).pathname, '/').replace(/\.git$/, '');
+    if(!project)
+      throw new Error('Could not resolve the Git project from origin');
+    const parts = project.split('/');
+    const variables = {
+      CI_PROJECT_PATH : project,
+      CI_PROJECT_NAME : parts.pop(),
+      CI_PROJECT_NAMESPACE : parts.join('/'),
+      CI_PROJECT_PATH_SLUG : project.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
+    };
+    this.PublishEnv(variables);
   }
 
   async Run(command, ...args) {
@@ -139,6 +135,11 @@ class Vvauth extends VauthLogin {
   async Env(source = false, renew = false) {
     let env = {}, secrets = {}, profile = {};
     let {git, map = {}, paths, path : mount = "secrets"} = this.config.env || {};
+    if(this.config.env && this.config.env.gitlab === true) {
+      const missing = ['CI_PROJECT_PATH', 'CI_PROJECT_NAME', 'CI_PROJECT_NAMESPACE', 'CI_PROJECT_PATH_SLUG'].filter(key => !process.env[key]);
+      if(missing.length)
+        throw new Error(`Missing ${missing.join(', ')}. Run venv --gitlab first.`);
+    }
     const localCredentials = this.config['ssh-agent-crypt'] && !this.RC.ssh_auth && !this.RC.jwt_auth;
     if(localCredentials) {
       await this.Connect(renew);
@@ -245,54 +246,7 @@ const shellEscape = (arg) =>  {
   return "'" + String(arg).replace(/'/g, '\'"\'"\'') + "'";
 };
 
-// Command spelling is a CLI concern, not an SDK compatibility alias.
-async function main() {
-  const argv = process.argv.slice(2);
-  if(argv[0] === 'run') {
-    const args = argv.slice(1);
-    if(args[0] === '--') args.shift();
-    const command = args.shift();
-    if(!command) throw new Error('Missing command for run');
-    process.exitCode = await new Vvauth().Run(command, ...args);
-    return;
-  }
-  const {args, dict} = parseArgs(argv);
-  const command = args.shift() || (dict.version ? 'version' : undefined);
-  if(command === 'version') {
-    process.stdout.write(Vvauth.Version() + '\n');
-    return;
-  }
-  if(!['env', 'login', 'connect', 'dotenv', 'show', 'set', 'unset', 'install'].includes(command))
-    throw new Error('Usage: vauth <env|login|connect|run|dotenv|show|set|unset|install|version>');
-  if(Object.hasOwn(dict, 'ir://run'))
-    throw new Error('Unsupported flag --ir://run');
-  const param = (index, name) => index < args.length ? args[index] : dict[name];
-  const enabled = value => value !== undefined && !['', 'false', '0'].includes(String(value).toLowerCase());
-  const client = new Vvauth();
-  let result;
-  switch(command) {
-    case 'env': result = await client.Env(enabled(param(0, 'source')), enabled(param(1, 'renew'))); break;
-    case 'login': await client.Login(enabled(param(0, 'source')), enabled(param(1, 'renew'))); return;
-    case 'connect': result = await client.Connect(enabled(param(0, 'renew'))); break;
-    case 'dotenv': await client.Dotenv(); return;
-    case 'show': result = await client.Show(); break;
-    case 'set':
-      if(param(0, 'k') === undefined || param(1, 'v') === undefined) throw new Error('Missing parameter --k or --v');
-      await client.Set(param(0, 'k'), param(1, 'v')); return;
-    case 'unset':
-      if(param(0, 'k') === undefined) throw new Error('Missing parameter --k');
-      await client.Unset(param(0, 'k')); return;
-    case 'install': await client.Install(); return;
-  }
-  if(result !== undefined && result !== '') {
-    if(Object.hasOwn(dict, 'ir://json') || typeof result !== 'string')
-      process.stdout.write(JSON.stringify(result) + (Object.hasOwn(dict, 'ir://json') ? '' : '\n'));
-    else
-      process.stdout.write(result);
-  }
-}
+module.exports = Vvauth;
 
 if(require.main === module)
-  main().catch(err => { console.error(err instanceof Error ? err.message : String(err)); process.exitCode = 1; });
-
-module.exports = Vvauth;
+  require('./cmd/vauth')();

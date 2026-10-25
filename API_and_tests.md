@@ -25,6 +25,7 @@ error, since names reach `export KEY=` unescaped. Flags may replace positionals 
 | `show` | Identity metadata merged over `.vauth_database` | JSON object |
 | `set <key> <value>` | Store `KEY` (upper-cased) in `private/<login>/.vauth_database` | nothing |
 | `unset <key>` | Remove a key from `.vauth_database` | nothing |
+| `gitlab` (`--gitlab`, `venv --gitlab`) | Read `origin`; no authentication or configuration write | Only `CI_PROJECT_*` exports |
 | `install` | Append the `venv` shell function to `~/.bashrc` | nothing |
 | `version` (`--version`) | Build version | one line |
 
@@ -48,7 +49,6 @@ vauth run -- terraform plan
 | `VAULT_TOKEN` | Returned offline by Connect without renewal/persistence; LookupSelf validates online when the profile is requested |
 | `SSH_AUTH_SOCK` | Agent for `ssh_auth` and for the token cache; on Windows, else Pageant (≥ 0.75), else the OpenSSH pipe |
 | `VAUTH_USER_IDENTITY`, `VAUTH_USER_MAIL` | Agent key selector for the token cache (first key otherwise) |
-| `CI` | When set, `env.gitlab` does not derive `CI_PROJECT_*` from `git remote get-url origin` |
 
 Tokens are cached in `~/.vauth/tokens/<sha256(vault_addr, ssh_auth, jwt_auth)>.creds`,
 armored with [ssh-agent-crypt](https://github.com/131/ssh-agent-crypt);
@@ -68,8 +68,8 @@ await vauth.Set('KEY', 'value'); await vauth.Unset('KEY');
 
 Node extends the vauth-login client directly. `Connect`, `LookupSelf` and
 `Request` are inherited, not forwarded through compatibility wrappers.
-`GetProfile`, `Env`, `Show`, `Set`, `Unset`, `Login`, `Dotenv`, `Run` and
-`PublishEnv` own the environment/profile behavior. `Version()` is static.
+`GetProfile`, `Env`, `Show`, `Set`, `Unset`, `Login`, `Dotenv`, `Run`,
+`Gitlab` and `PublishEnv` own the environment/profile behavior. `Version()` is static.
 `RC`, `VAULT_ADDR` and `VAULT_TOKEN` are the inherited read-only getters.
 `config` contains a mutable copy of only `env` and `ssh-agent-crypt`, with local
 `env` macros expanded; the full frozen RC retains original values/macros.
@@ -111,10 +111,11 @@ insertion/YAML order. There is no second auth parser, token lifecycle, cache
 implementation or HTTP transport in vvauth.
 
 Node and Go consume vauth-login 1.1.5 and ssh-agent-crypt 1.4.2; Node uses nyks
-6.17.0. `env.gitlab` derives `CI_PROJECT_*` from the current working repository,
-including when `VAUTHRC` is elsewhere. In CI, supplied variables are retained.
-This is distinct from standalone Go `ParseConfig`, whose explicit file argument
-identifies its Git directory.
+6.17.0. `Gitlab()` asynchronously reads `origin` and publishes only `CI_PROJECT_PATH`,
+`CI_PROJECT_NAME`, `CI_PROJECT_NAMESPACE` and `CI_PROJECT_PATH_SLUG` as shell exports.
+`env.gitlab: true` makes `Env()` refuse missing project variables before any Vault
+call, with a request to run `venv --gitlab` first. There is no Git inference at
+construction, authentication in `Gitlab()`, or configuration-file update.
 
 The SDK keeps language-native conventions: promises/throws in Node,
 values plus errors in Go. Node `Env(source, renew)` can publish directly;

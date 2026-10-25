@@ -935,7 +935,7 @@ test('constructor consumes one frozen RC snapshot without reopening the selected
   assert.equal(v.rc_file, undefined);
 });
 
-test('env.gitlab uses the working repository when VAUTHRC lives elsewhere', async t => {
+test('env.gitlab no longer infers Git metadata in the constructor', async t => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), 'vvauth-git-project-'));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'vvauth-git-config-'));
   t.after(() => fs.rmSync(project, {recursive : true, force : true}));
@@ -949,6 +949,58 @@ test('env.gitlab uses the working repository when VAUTHRC lives elsewhere', asyn
     const {stdout} = await exec(process.execPath, ['-e', script], {
       cwd : project, env : {...process.env, HOME : home, VAUTHRC : file, VAULT_TOKEN : '', VAULT_ADDR : '', CI, CI_PROJECT_PATH : 'pipeline/project'},
     });
-    assert.equal(JSON.parse(stdout).env.map.PROJECT, CI ? 'pipeline/project' : 'Team/app');
+    assert.equal(JSON.parse(stdout).env.map.PROJECT, 'pipeline/project');
+  }
+});
+
+test('gitlab publishes only CI exports without authentication or config writes', async t => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'vvauth-gitlab-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'vvauth-gitlab-home-'));
+  t.after(() => fs.rmSync(project, {recursive : true, force : true}));
+  t.after(() => fs.rmSync(home, {recursive : true, force : true}));
+  assert.equal(spawnSync('git', ['init', '-q', project]).status, 0);
+  assert.equal(spawnSync('git', ['-C', project, 'remote', 'add', 'origin', 'ssh://git@git.example.test:2222/Team/sub/App.git']).status, 0);
+  let requests = 0;
+  const server = http.createServer((req, res) => { requests++; res.end('{}'); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const file = path.join(home, 'selected.vauthrc');
+  const document = {vault_addr : `http://127.0.0.1:${server.address().port}`, jwt_auth : {jwt : 'fixture-jwt'}, env : {gitlab : true, map : {KEEP : 'literal'}}};
+  const body = JSON.stringify(document);
+  fs.writeFileSync(file, body);
+  const env = {...process.env, HOME : home, VAUTHRC : file, VAULT_TOKEN : '', VAULT_ADDR : '', SSH_AUTH_SOCK : ''};
+  const expected = {CI_PROJECT_PATH : 'Team/sub/App', CI_PROJECT_NAME : 'App', CI_PROJECT_NAMESPACE : 'Team/sub', CI_PROJECT_PATH_SLUG : 'team-sub-app'};
+  for(const cli of [path.resolve(__dirname, '..', 'index.js'), path.resolve(__dirname, '..', 'cmd/vauth.js')]) {
+    for(const args of [['gitlab'], ['--gitlab'], ['env', '--source', '--gitlab']]) {
+      const output = await exec(process.execPath, [cli, ...args], {cwd : project, env});
+      const names = [...output.stdout.matchAll(/^export ([A-Z_]+)=/gm)].map(match => match[1]);
+      assert.deepEqual(names, Object.keys(expected));
+      for(const [key, value] of Object.entries(expected)) assert.ok(output.stdout.includes(`export ${key}='${value}'`));
+      assert.equal(output.stderr, '');
+      assert.equal(fs.readFileSync(file, 'utf8'), body);
+      assert.equal(fs.existsSync(path.join(project, '.vauthrc')), false);
+    }
+  }
+  assert.equal(requests, 0);
+});
+
+test('Env with env.gitlab refuses missing CI variables before contacting Vault', async t => {
+  const {client, requests} = await fixture(t);
+  const keys = ['CI_PROJECT_PATH', 'CI_PROJECT_NAME', 'CI_PROJECT_NAMESPACE', 'CI_PROJECT_PATH_SLUG'];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  try {
+    for(const key of keys) delete process.env[key];
+    const v = client({rc : {env : {gitlab : true, map : {KEEP : 'literal'}}}});
+    await assert.rejects(v.Env(), /Run venv --gitlab first/);
+    assert.deepEqual(requests, []);
+    for(const key of keys) process.env[key] = 'provided';
+    const env = await v.Env();
+    assert.equal(env.KEEP, 'literal');
+    assert.ok(requests.length > 0);
+  } finally {
+    for(const [key, value] of Object.entries(previous)) {
+      if(value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });

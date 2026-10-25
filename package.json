@@ -4,7 +4,7 @@
   "description": "Vault Auth helper",
   "main": "index.js",
   "bin": {
-    "vauth": "./index.js"
+    "vauth": "./cmd/vauth.js"
   },
   "scripts": {
     "test": "node --test test/token-cache.js",

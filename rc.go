@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/url"
-	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -198,44 +195,25 @@ func jsonString(value string) []byte {
 	return bytes.TrimRight(out.Bytes(), "\n")
 }
 
-func mappingValue(node *yaml.Node, key string) *yaml.Node {
-	if node == nil {
-		return nil
-	}
-	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
-		node = node.Content[0]
-	}
-	if node.Kind != yaml.MappingNode {
-		return nil
-	}
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == key {
-			return node.Content[i+1]
-		}
-	}
-	return nil
-}
-
 // ParseConfig expands environment/profile sections from a standalone YAML body.
-// With env.gitlab outside CI, CI_PROJECT_* comes from the file's Git repository.
 func ParseConfig(body []byte, file string, environ map[string]string) (*Config, error) {
 	var document yaml.Node
 	if err := yaml.Unmarshal(body, &document); err != nil {
 		return nil, fmt.Errorf("Could not parse %s: %w", file, err)
 	}
-	return compileConfig(&document, file, filepath.Dir(file), environ)
+	return compileConfig(&document, file, environ)
 }
 
 // configFromRC consumes the independent JSON snapshot without reopening its file.
-func configFromRC(rc map[string]any, dir string, environ map[string]string) (*Config, error) {
+func configFromRC(rc map[string]any, environ map[string]string) (*Config, error) {
 	var document yaml.Node
 	if err := document.Encode(rc); err != nil {
 		return nil, fmt.Errorf("Could not read RC: %w", err)
 	}
-	return compileConfig(&document, "RC", dir, environ)
+	return compileConfig(&document, "RC", environ)
 }
 
-func compileConfig(document *yaml.Node, file, dir string, environ map[string]string) (*Config, error) {
+func compileConfig(document *yaml.Node, file string, environ map[string]string) (*Config, error) {
 	root := document
 	if root.Kind == yaml.DocumentNode {
 		if len(root.Content) == 0 {
@@ -254,67 +232,10 @@ func compileConfig(document *yaml.Node, file, dir string, environ map[string]str
 		}
 	}
 	root.Content = content
-	if gitlab := mappingValue(mappingValue(document, "env"), "gitlab"); gitlab != nil && truthy(gitlab) && environ["CI"] == "" {
-		environ = withGitLabProject(environ, dir)
-	}
 	walk(document, func(value string) string { return ReplaceEnv(value, Lookup{"env": environ}) })
 	var config Config
 	if err := document.Decode(&config); err != nil {
 		return nil, fmt.Errorf("Could not parse %s: %w", file, err)
 	}
 	return &config, nil
-}
-
-func truthy(node *yaml.Node) bool {
-	switch node.Kind {
-	case yaml.ScalarNode:
-		switch node.Tag {
-		case "!!null":
-			return false
-		case "!!bool":
-			return node.Value == "true"
-		case "!!int", "!!float":
-			return node.Value != "0" && node.Value != "0.0"
-		}
-		return node.Value != ""
-	}
-	return true
-}
-
-var scpRemote = regexp.MustCompile(`^[^@]+@[^:]+:(.+)$`)
-
-func withGitLabProject(environ map[string]string, dir string) map[string]string {
-	cmd := exec.Command("git", "remote", "get-url", "origin")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return environ
-	}
-	remote := strings.TrimSpace(string(out))
-	var project string
-	if match := scpRemote.FindStringSubmatch(remote); match != nil {
-		project = match[1]
-	} else if parsed, err := url.Parse(remote); err == nil {
-		project = parsed.Path
-	}
-	project = strings.TrimSuffix(strings.Trim(project, "/"), ".git")
-	if project == "" {
-		return environ
-	}
-	parts := strings.Split(project, "/")
-	extended := make(map[string]string, len(environ)+4)
-	for k, v := range environ {
-		extended[k] = v
-	}
-	extended["CI_PROJECT_PATH"] = project
-	extended["CI_PROJECT_NAME"] = parts[len(parts)-1]
-	extended["CI_PROJECT_NAMESPACE"] = strings.Join(parts[:len(parts)-1], "/")
-	extended["CI_PROJECT_PATH_SLUG"] = slug(project)
-	return extended
-}
-
-var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
-
-func slug(value string) string {
-	return strings.Trim(nonSlug.ReplaceAllString(strings.ToLower(value), "-"), "-")
 }

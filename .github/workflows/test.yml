@@ -49,4 +49,5 @@ jobs:
       - run: npm install --omit=dev --ignore-scripts --no-audit
       - run: |
           node --check index.js
+          node --check cmd/vauth.js
           node index.js version

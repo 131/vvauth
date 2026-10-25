@@ -27,6 +27,7 @@ Commands:
   unset <key>                 Remove a key from the .vauth_database
   install                     Install the venv shell function in ~/.bashrc
   version                     Print the build version
+  gitlab                      Export CI_PROJECT_* from origin without login
 `
 
 // version is set by the release build (-ldflags "-X main.version=v1.2.3");
@@ -101,6 +102,9 @@ func run(argv []string) error {
 		return runCommand(argv[1:])
 	}
 	args, dict := parseArgs(argv)
+	if truthy(dict["gitlab"], dict["gitlab"] != "") {
+		args = []string{"gitlab"}
+	}
 	if _, ok := dict["version"]; ok && len(args) == 0 {
 		args = []string{"version"}
 	}
@@ -121,6 +125,8 @@ func run(argv []string) error {
 		return err
 	}
 	switch command {
+	case "gitlab":
+		return v.Gitlab()
 	case "env":
 		source, renew := truthy(param(args, dict, 0, "source")), truthy(param(args, dict, 1, "renew"))
 		env, err := v.Env(renew)

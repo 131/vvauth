@@ -90,7 +90,7 @@ func New() (*Vauth, error) {
 		return nil, err
 	}
 	v := &Vauth{Vauth: login}
-	config, err := configFromRC(login.RC(), cwd, login.Environ)
+	config, err := configFromRC(login.RC(), login.Environ)
 	if err != nil {
 		return nil, err
 	}
@@ -226,6 +226,17 @@ func (v *Vauth) Env(renew bool) (*OrderedMap, error) {
 	config := v.Config.Env
 	if config == nil {
 		config = &EnvConfig{}
+	}
+	if config.GitLab {
+		var missing []string
+		for _, key := range []string{"CI_PROJECT_PATH", "CI_PROJECT_NAME", "CI_PROJECT_NAMESPACE", "CI_PROJECT_PATH_SLUG"} {
+			if v.Environ[key] == "" {
+				missing = append(missing, key)
+			}
+		}
+		if len(missing) != 0 {
+			return nil, fmt.Errorf("Missing %s. Run venv --gitlab first.", strings.Join(missing, ", "))
+		}
 	}
 	profile := &Profile{Metadata: map[string]any{}, Database: map[string]any{}}
 	rc := v.RC()

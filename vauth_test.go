@@ -829,7 +829,7 @@ func TestNewConsumesCompleteRCSnapshot(t *testing.T) {
 	if err := os.Remove(os.Getenv("VAUTHRC")); err != nil {
 		t.Fatal(err)
 	}
-	config, err := configFromRC(v.RC(), ".", v.Environ)
+	config, err := configFromRC(v.RC(), v.Environ)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -837,7 +837,7 @@ func TestNewConsumesCompleteRCSnapshot(t *testing.T) {
 	equal(t, value, "local-value")
 }
 
-func TestGitLabUsesWorkingProjectWithExternalRC(t *testing.T) {
+func TestGitLabIsNotInferredDuringConstruction(t *testing.T) {
 	project := t.TempDir()
 	for _, args := range [][]string{{"init", "-q", project}, {"-C", project, "remote", "add", "origin", "git@git.example.test:Team/app.git"}} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
@@ -858,10 +858,7 @@ func TestGitLabUsesWorkingProjectWithExternalRC(t *testing.T) {
 	})
 	for _, ci := range []string{"", "1"} {
 		v := configuredClient(t, map[string]any{"env": map[string]any{"gitlab": true, "map": map[string]any{"PROJECT": "$${env.CI_PROJECT_PATH}"}}}, map[string]string{"CI": ci, "CI_PROJECT_PATH": "pipeline/project"})
-		want := "Team/app"
-		if ci != "" {
-			want = "pipeline/project"
-		}
+		want := "pipeline/project"
 		value, _ := v.Config.Env.Map.Get("PROJECT")
 		equal(t, value, want)
 	}

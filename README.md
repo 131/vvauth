@@ -47,6 +47,16 @@ their values redacted. In scripts or CI, without a shell to source into, use
 `vauth run <command>`, `vauth env --ir://json` or `vauth dotenv` instead.
 
 
+Initialize GitLab-style project variables in the current shell:
+
+```bash
+venv --gitlab
+```
+
+This publishes only `CI_PROJECT_*`, without logging in or changing `.vauthrc`.
+With `env.gitlab: true`, normal environment loading requires those variables.
+
+
 # Vauth configuration
 ## Vauth configuration file location
 vauth configuration file lies on a `.vauthrc` file (this name can be controlled by the VAUTHRC env var).
