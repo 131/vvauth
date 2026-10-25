@@ -24,8 +24,14 @@ venv
 venv --renew
 ```
 
-`venv` sources the exports produced by `vauth env --source`. `--renew` forces
-fresh authentication. For a machine-readable result:
+`vauth install` defines the Bash function `venv` in `~/.bashrc`:
+
+```bash
+function venv() { source <(/usr/bin/env vauth env --source "$@"); }
+```
+
+`source ~/.bashrc` loads it in the current shell. `--renew` forces fresh
+authentication. For a machine-readable result:
 
 ```bash
 vauth env --ir://json
@@ -66,9 +72,6 @@ Initialize them explicitly from `origin`:
 venv --gitlab
 ```
 
-This exports only `CI_PROJECT_PATH`, `CI_PROJECT_NAME`, `CI_PROJECT_NAMESPACE`
-and `CI_PROJECT_PATH_SLUG`. It does not authenticate or modify configuration.
-
 ## Tokens and trust
 
 An inherited `VAULT_TOKEN` is reused offline. Otherwise, vauth-login handles
@@ -92,6 +95,12 @@ checks and limitations. They are independent source reviews, not certification.
 [Coordination and open risks](SECURITY_AUDIT_COORDINATION.md) distinguish
 reviewer limitations from host validation; [provenance](SECURITY_AUDIT_PROVENANCE.json)
 records the exact source, models and prompt/report hashes.
+
+| Criterion | Claude Opus 5.5 | GPT 6.1 Sol |
+| --- | ---: | ---: |
+| ✨ **Coolness** | 15/20 | 17/20 |
+| Robustness | 13/20 | 13/20 |
+| Safety | 13/20 | 12/20 |
 
 ## Credits
 

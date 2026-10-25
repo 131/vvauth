@@ -15,8 +15,7 @@ venv --gitlab
 
 `env --ir://json` writes one JSON object to stdout, with diagnostics on stderr.
 JSON key order and final whitespace are not significant. `venv` sources
-`vauth env --source "$@"`; renewal forces authentication. GitLab initialization
-publishes only four `CI_PROJECT_*` exports, without login, cache or file writes.
+`vauth env --source "$@"`; renewal forces authentication.
 
 ## Node CLI — cnyks
 
