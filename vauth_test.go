@@ -135,17 +135,55 @@ func newFixture(t *testing.T, options fixtureOptions) *fixture {
 	return f
 }
 
-// client avoids the real user's environment, configuration and cache.
-func (f *fixture) client() *Vauth {
-	return &Vauth{Vauth: &vauthlogin.Vauth{
-		RC:         vauthlogin.RC{JWTAuth: &vauthlogin.JWTAuth{Path: "jwt", JWT: "test-jwt", Role: "test-role"}},
-		VaultAddr:  f.server.URL,
-		Agent:      agentSocket,
-		TokenCache: true,
-		CacheDir:   filepath.Join(f.dir, ".vauth", "tokens"),
-		Environ:    map[string]string{},
-		Stderr:     io.Discard,
-	}}
+// configuredClient constructs through the public readers, using synthetic RC/env.
+func configuredClient(t *testing.T, document map[string]any, overrides map[string]string) *Vauth {
+	t.Helper()
+	file := filepath.Join(t.TempDir(), ".vauthrc")
+	body, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VAUTHRC", file)
+	t.Setenv("VAULT_TOKEN", "")
+	t.Setenv("VAULT_ADDR", "")
+	for key, value := range overrides {
+		t.Setenv(key, value)
+	}
+	v, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.Stderr = io.Discard
+	return v
+}
+
+type clientOptions struct {
+	token  string
+	rc     map[string]any
+	noAuth bool
+}
+
+// client avoids the real user's configuration and cache.
+func (f *fixture) client(settings ...clientOptions) *Vauth {
+	options := clientOptions{}
+	if len(settings) != 0 {
+		options = settings[0]
+	}
+	document := map[string]any{"vault_addr": f.server.URL, "jwt_auth": map[string]any{"path": "jwt", "jwt": "test-jwt", "role": "test-role"}}
+	for key, value := range options.rc {
+		document[key] = value
+	}
+	if options.noAuth {
+		delete(document, "jwt_auth")
+	}
+	v := configuredClient(f.t, document, map[string]string{"VAULT_TOKEN": options.token})
+	v.Agent = agentSocket
+	v.TokenCache = true
+	v.CacheDir = filepath.Join(f.dir, ".vauth", "tokens")
+	return v
 }
 
 // Fixture data follows the shared cache format; the application owns no cache code.
@@ -157,8 +195,16 @@ type tokenCache struct {
 }
 
 func testCacheKey(v *Vauth) string {
-	key := `{"vault_addr":` + string(jsonString(strings.Trim(v.VaultAddr, "/")))
-	if auth := v.RC.AuthKey(); auth != "" {
+	key := `{"vault_addr":` + string(jsonString(strings.Trim(v.VAULT_ADDR(), "/")))
+	body, err := json.Marshal(v.RC())
+	if err != nil {
+		panic(err)
+	}
+	rc, err := vauthlogin.ParseRC(body, "fixture RC", v.Environ)
+	if err != nil {
+		panic(err)
+	}
+	if auth := rc.AuthKey(); auth != "" {
 		key += "," + auth
 	}
 	return sha256Hex(key + "}")
@@ -309,7 +355,7 @@ func TestCachedTokensReusedWithoutRevocationCheck(t *testing.T) {
 	f.seed(v, 12*hour)
 	equal(t, connect(t, v, false), "cached-token")
 	equal(t, len(f.requests), 0)
-	if _, err := v.LookupSelf(v.VaultToken); err == nil {
+	if _, err := v.LookupSelf(v.VAULT_TOKEN()); err == nil {
 		t.Fatal("lookup should fail")
 	}
 }
@@ -335,11 +381,10 @@ func TestRejectedRenewalTriggersLogin(t *testing.T) {
 
 func TestServerFailuresDoNotGenerateTokens(t *testing.T) {
 	f := newFixture(t, fixtureOptions{lookupStatus: 500})
-	v := f.client()
+	v := f.client(clientOptions{token: "uncached-token"})
 	f.seed(v, 12*hour)
-	v.VaultToken = "uncached-token"
 	for i := 0; i < 2; i++ {
-		if _, err := v.LookupSelf(v.VaultToken); err == nil {
+		if _, err := v.LookupSelf(v.VAULT_TOKEN()); err == nil {
 			t.Fatal("lookup should fail")
 		}
 	}
@@ -356,9 +401,8 @@ func TestServerFailuresDoNotGenerateTokens(t *testing.T) {
 
 func TestInheritedTokenIsOfflineAndNotCached(t *testing.T) {
 	f := newFixture(t, fixtureOptions{})
-	v := f.client()
+	v := f.client(clientOptions{token: "environment-token"})
 	f.seed(v, 12*hour)
-	v.VaultToken = "environment-token"
 	equal(t, connect(t, v, false), "environment-token")
 	equal(t, f.read(v).Token, "cached-token")
 	equal(t, len(f.requests), 0)
@@ -397,16 +441,14 @@ func TestCacheIsolation(t *testing.T) {
 	f := newFixture(t, fixtureOptions{})
 	first := f.client()
 	f.seed(first, 12*hour)
-	second := f.client()
-	second.RC.JWTAuth.Role = "other-role"
+	second := f.client(clientOptions{rc: map[string]any{"jwt_auth": map[string]any{"path": "jwt", "jwt": "test-jwt", "role": "other-role"}}})
 	equal(t, connect(t, second, false), "fresh-token")
 	if cacheFile(first) == cacheFile(second) {
 		t.Fatal("cache files should differ")
 	}
 	equal(t, f.read(first).Token, "cached-token")
 	equal(t, f.read(second).Token, "fresh-token")
-	third := f.client()
-	third.VaultAddr = "http://other-vault.test"
+	third := f.client(clientOptions{rc: map[string]any{"vault_addr": "http://other-vault.test"}})
 	if testCacheKey(third) == testCacheKey(first) {
 		t.Fatal("cache keys should differ")
 	}
@@ -419,17 +461,11 @@ func TestCacheIsolation(t *testing.T) {
 }
 
 func TestTokenCacheKeyMatchesNode(t *testing.T) {
-	// sha256 of JSON.stringify({vault_addr, ssh_auth, jwt_auth}) as the Node
-	// implementation renders it (undefined members omitted).
-	v := &Vauth{Vauth: &vauthlogin.Vauth{VaultAddr: "https://vault.example.test/", RC: vauthlogin.RC{SSHAuth: &vauthlogin.SSHAuth{Role: "alice"}}}}
+	v := configuredClient(t, map[string]any{"vault_addr": "https://vault.example.test/", "ssh_auth": map[string]any{"role": "alice"}}, nil)
 	equal(t, testCacheKey(v), sha256Hex(`{"vault_addr":"https://vault.example.test","ssh_auth":{"role":"alice"}}`))
-	v = &Vauth{Vauth: &vauthlogin.Vauth{VaultAddr: "https://vault.example.test", RC: vauthlogin.RC{JWTAuth: &vauthlogin.JWTAuth{Path: "jwt", JWT: "x", Role: "r"}}}}
-	equal(t, testCacheKey(v), sha256Hex(`{"vault_addr":"https://vault.example.test","jwt_auth":{"path":"jwt","jwt":"x","role":"r"}}`))
-	rc, err := vauthlogin.ParseRC([]byte("vault_addr: https://vault.example.test\nssh_auth:\n  role: $${env.USER}\n"), ".vauthrc", map[string]string{"USER": "bob"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	v = &Vauth{Vauth: &vauthlogin.Vauth{VaultAddr: rc.VaultAddr, RC: *rc}}
+	v = configuredClient(t, map[string]any{"vault_addr": "https://vault.example.test", "jwt_auth": map[string]any{"path": "jwt", "jwt": "x", "role": "r"}}, nil)
+	equal(t, testCacheKey(v), sha256Hex(`{"vault_addr":"https://vault.example.test","jwt_auth":{"jwt":"x","path":"jwt","role":"r"}}`))
+	v = configuredClient(t, map[string]any{"vault_addr": "https://vault.example.test", "ssh_auth": map[string]any{"role": "$${env.USER}"}}, map[string]string{"USER": "bob"})
 	equal(t, testCacheKey(v), sha256Hex(`{"vault_addr":"https://vault.example.test","ssh_auth":{"role":"bob"}}`))
 }
 
@@ -456,21 +492,18 @@ func TestUnwritableCacheDoesNotPreventLogin(t *testing.T) {
 
 func TestWithoutAuthMethodInheritanceStillWorks(t *testing.T) {
 	f := newFixture(t, fixtureOptions{lookupStatus: 403})
-	v := f.client()
+	v := f.client(clientOptions{token: "uncached-token", noAuth: true})
 	f.seed(v, 12*hour)
-	v.RC = vauthlogin.RC{}
-	v.VaultToken = "uncached-token"
 	equal(t, connect(t, v, false), "uncached-token")
-	equal(t, v.VaultToken, "uncached-token")
+	equal(t, v.VAULT_TOKEN(), "uncached-token")
 	equal(t, connect(t, v, true), "")
 	equal(t, len(f.requests), 0)
 }
 
 func TestRenewIgnoresTokensAndSaves(t *testing.T) {
 	f := newFixture(t, fixtureOptions{})
-	v := f.client()
+	v := f.client(clientOptions{token: "environment-token"})
 	f.seed(v, 12*hour)
-	v.VaultToken = "environment-token"
 	equal(t, connect(t, v, true), "fresh-token")
 	equalPaths(t, f.paths(), "/v1/auth/jwt/login")
 	equal(t, f.read(v).Token, "fresh-token")
@@ -537,9 +570,8 @@ func TestRenewalUpdatesLeaseBaseline(t *testing.T) {
 
 func TestNormalReuseNeverWrites(t *testing.T) {
 	f := newFixture(t, fixtureOptions{})
-	v := f.client()
+	v := f.client(clientOptions{token: "cached-token"})
 	f.seed(v, 12*hour)
-	v.VaultToken = "cached-token"
 	before, _ := os.ReadFile(cacheFile(v))
 	stat, _ := os.Stat(cacheFile(v))
 	equal(t, connect(t, v, false), "cached-token")
@@ -586,9 +618,8 @@ func TestTokenCacheDisabled(t *testing.T) {
 	}
 
 	f = newFixture(t, fixtureOptions{})
-	v = f.client()
+	v = f.client(clientOptions{token: "environment-token"})
 	v.TokenCache = false
-	v.VaultToken = "environment-token"
 	equal(t, connect(t, v, false), "environment-token")
 	equal(t, len(f.requests), 0)
 	if _, err := os.Stat(cacheFile(v)); err == nil {
@@ -778,4 +809,60 @@ ssh-agent-crypt: {path: '$${env.FILE}'}
 	value, _ := config.Env.Map.Get("LOGIN")
 	equal(t, value, "alice")
 	equal(t, config.AgentCrypt.Path, "fixture.creds")
+}
+
+func TestNewConsumesCompleteRCSnapshot(t *testing.T) {
+	document := map[string]any{
+		"env":   map[string]any{"map": map[string]any{"VALUE": "$${env.LOCAL_VALUE}", "USER": "$${profile.USER}"}},
+		"extra": map[string]any{"nested": []any{"retained"}},
+	}
+	v := configuredClient(t, document, map[string]string{"LOCAL_VALUE": "local-value", "VAULT_ADDR": "https://vault.example.test"})
+	value, _ := v.Config.Env.Map.Get("VALUE")
+	equal(t, value, "local-value")
+	value, _ = v.Config.Env.Map.Get("USER")
+	equal(t, value, "$${profile.USER}")
+	v.Config.Env.Map.Set("VALUE", "consumer-value")
+	equal(t, v.RC()["env"].(map[string]any)["map"].(map[string]any)["VALUE"], "$${env.LOCAL_VALUE}")
+	if _, ok := v.RC()["extra"]; !ok {
+		t.Fatal("complete RC section lost")
+	}
+	if err := os.Remove(os.Getenv("VAUTHRC")); err != nil {
+		t.Fatal(err)
+	}
+	config, err := configFromRC(v.RC(), ".", v.Environ)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, _ = config.Env.Map.Get("VALUE")
+	equal(t, value, "local-value")
+}
+
+func TestGitLabUsesWorkingProjectWithExternalRC(t *testing.T) {
+	project := t.TempDir()
+	for _, args := range [][]string{{"init", "-q", project}, {"-C", project, "remote", "add", "origin", "git@git.example.test:Team/app.git"}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git: %v %s", err, out)
+		}
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(project); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(cwd); err != nil {
+			t.Error(err)
+		}
+	})
+	for _, ci := range []string{"", "1"} {
+		v := configuredClient(t, map[string]any{"env": map[string]any{"gitlab": true, "map": map[string]any{"PROJECT": "$${env.CI_PROJECT_PATH}"}}}, map[string]string{"CI": ci, "CI_PROJECT_PATH": "pipeline/project"})
+		want := "Team/app"
+		if ci != "" {
+			want = "pipeline/project"
+		}
+		value, _ := v.Config.Env.Map.Get("PROJECT")
+		equal(t, value, want)
+	}
 }

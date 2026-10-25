@@ -10,11 +10,11 @@ const parseArgs = require('nyks/process/parseArgs');
 const {spawn, execFileSync} = require('child_process');
 const readline = require('readline');
 
-const {parse} = require('yaml');
 const semver     = require('semver');
 const trim       = require('mout/string/trim');
 const get        = require('mout/object/get');
 const walk       = require('nyks/object/walk');
+const structuredClone = require('nyks/object/structuredClone');
 
 const replaceEnv = require('nyks/string/replaceEnv');
 
@@ -38,35 +38,30 @@ class Vvauth extends VauthLogin {
     }
 
     super();
-    this.config = {};
 
-    const vauth_rc = this.rc_file;
-    if(vauth_rc) {
-      let body = fs.readFileSync(vauth_rc, 'utf8');
-      let rc = parse(body);
-      let env = process.env;
+    const rc = this.RC;
+    let env = process.env;
 
-      if(get(rc, 'env.gitlab') && !env.CI) {
-        try {
-          let remote_url = String(execFileSync('git', ['remote', 'get-url', 'origin'], {cwd : path.dirname(vauth_rc), stdio : ['ignore', 'pipe', 'ignore']})).trim();
-          let match = remote_url.match(/^[^@]+@[^:]+:(.+)$/);
-          let CI_PROJECT_PATH = match ? match[1] : trim(new URL(remote_url).pathname, '/');
-          CI_PROJECT_PATH = trim(CI_PROJECT_PATH, '/').replace(/\.git$/, '');
+    if(get(rc, 'env.gitlab') && !env.CI) {
+      try {
+        let remote_url = String(execFileSync('git', ['remote', 'get-url', 'origin'], {stdio : ['ignore', 'pipe', 'ignore']})).trim();
+        let match = remote_url.match(/^[^@]+@[^:]+:(.+)$/);
+        let CI_PROJECT_PATH = match ? match[1] : trim(new URL(remote_url).pathname, '/');
+        CI_PROJECT_PATH = trim(CI_PROJECT_PATH, '/').replace(/\.git$/, '');
 
-          if(CI_PROJECT_PATH) {
-            let parts = CI_PROJECT_PATH.split('/');
-            let CI_PROJECT_NAME = parts.pop();
-            let CI_PROJECT_NAMESPACE = parts.join('/');
-            let CI_PROJECT_PATH_SLUG = String(CI_PROJECT_PATH).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+        if(CI_PROJECT_PATH) {
+          let parts = CI_PROJECT_PATH.split('/');
+          let CI_PROJECT_NAME = parts.pop();
+          let CI_PROJECT_NAMESPACE = parts.join('/');
+          let CI_PROJECT_PATH_SLUG = String(CI_PROJECT_PATH).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 
-            env = {...env, CI_PROJECT_PATH, CI_PROJECT_NAME, CI_PROJECT_NAMESPACE, CI_PROJECT_PATH_SLUG};
-          }
-        } catch(err) {}
-      }
-
-      const config = Object.fromEntries(['env', 'ssh-agent-crypt'].filter(key => rc && Object.hasOwn(rc, key)).map(key => [key, rc[key]]));
-      this.config = walk(config, v => replaceEnv(v, {env}));
+          env = {...env, CI_PROJECT_PATH, CI_PROJECT_NAME, CI_PROJECT_NAMESPACE, CI_PROJECT_PATH_SLUG};
+        }
+      } catch(err) {}
     }
+
+    const config = Object.fromEntries(['env', 'ssh-agent-crypt'].filter(key => rc && Object.hasOwn(rc, key)).map(key => [key, rc[key]]));
+    this.config = walk(structuredClone(config), v => replaceEnv(v, {env}));
 
 
     if(!this.VAULT_ADDR)
@@ -144,7 +139,7 @@ class Vvauth extends VauthLogin {
   async Env(source = false, renew = false) {
     let env = {}, secrets = {}, profile = {};
     let {git, map = {}, paths, path : mount = "secrets"} = this.config.env || {};
-    const localCredentials = this.config['ssh-agent-crypt'] && !this.rc.ssh_auth && !this.rc.jwt_auth;
+    const localCredentials = this.config['ssh-agent-crypt'] && !this.RC.ssh_auth && !this.RC.jwt_auth;
     if(localCredentials) {
       await this.Connect(renew);
     } else {

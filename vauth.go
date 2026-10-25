@@ -90,18 +90,12 @@ func New() (*Vauth, error) {
 		return nil, err
 	}
 	v := &Vauth{Vauth: login}
-	if login.RCFile != "" {
-		body, err := os.ReadFile(login.RCFile)
-		if err != nil {
-			return nil, err
-		}
-		config, err := ParseConfig(body, login.RCFile, login.Environ)
-		if err != nil {
-			return nil, err
-		}
-		v.Config = *config
+	config, err := configFromRC(login.RC(), cwd, login.Environ)
+	if err != nil {
+		return nil, err
 	}
-	if v.VaultAddr == "" {
+	v.Config = *config
+	if v.VAULT_ADDR() == "" {
 		fmt.Fprintln(v.stderr(), "Not bound to any vault")
 	}
 	return v, nil
@@ -155,14 +149,14 @@ func (v *Vauth) GetProfile(renew bool) (*Profile, error) {
 		return nil, err
 	}
 	profile := &Profile{Metadata: map[string]any{}, Database: map[string]any{}}
-	if v.VaultToken == "" || v.VaultAddr == "" {
+	if v.VAULT_TOKEN() == "" || v.VAULT_ADDR() == "" {
 		return profile, nil
 	}
-	info, err := v.LookupSelf(v.VaultToken)
+	info, err := v.LookupSelf(v.VAULT_TOKEN())
 	if err != nil {
 		return nil, err
 	}
-	_, response, err := v.Request("GET", "identity/entity/id/"+info.EntityID, v.VaultToken, nil, 200)
+	_, response, err := v.Request("GET", "identity/entity/id/"+info.EntityID, v.VAULT_TOKEN(), nil, 200)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +228,8 @@ func (v *Vauth) Env(renew bool) (*OrderedMap, error) {
 		config = &EnvConfig{}
 	}
 	profile := &Profile{Metadata: map[string]any{}, Database: map[string]any{}}
-	localCredentials := v.Config.AgentCrypt != nil && v.RC.SSHAuth == nil && v.RC.JWTAuth == nil
+	rc := v.RC()
+	localCredentials := v.Config.AgentCrypt != nil && rc["ssh_auth"] == nil && rc["jwt_auth"] == nil
 	if localCredentials {
 		if _, err := v.Connect(renew); err != nil {
 			return nil, err
@@ -247,11 +242,11 @@ func (v *Vauth) Env(renew bool) (*OrderedMap, error) {
 		}
 	}
 	env := &OrderedMap{}
-	if v.VaultToken != "" {
-		env.Set("VAULT_TOKEN", v.VaultToken)
+	if v.VAULT_TOKEN() != "" {
+		env.Set("VAULT_TOKEN", v.VAULT_TOKEN())
 	}
-	if v.VaultAddr != "" {
-		env.Set("VAULT_ADDR", v.VaultAddr)
+	if v.VAULT_ADDR() != "" {
+		env.Set("VAULT_ADDR", v.VAULT_ADDR())
 	}
 
 	secrets := map[string]any{}
@@ -316,7 +311,7 @@ func (v *Vauth) Login(source, renew bool) error {
 	}
 	if source {
 		env := &OrderedMap{}
-		env.Set("VAULT_TOKEN", v.VaultToken)
+		env.Set("VAULT_TOKEN", v.VAULT_TOKEN())
 		v.PublishEnv(env)
 	}
 	return nil

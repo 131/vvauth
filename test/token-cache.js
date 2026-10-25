@@ -52,6 +52,27 @@ after(() => {
 
 const HOUR = 60 * 60;
 
+// Exercise real construction under an isolated RC, without changing private data.
+function configuredClient(t, document, overrides = {}) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'vvauth-config-'));
+  t.after(() => fs.rmSync(home, {recursive : true, force : true}));
+  const file = path.join(home, '.vauthrc');
+  fs.writeFileSync(file, JSON.stringify(document));
+  const env = {HOME : home, USERPROFILE : home, VAUTHRC : file, VAULT_TOKEN : '', VAULT_ADDR : '', ...overrides};
+  const previous = {};
+  for(const key of Object.keys(env)) { previous[key] = process.env[key]; process.env[key] = env[key]; }
+  const modules = [require.resolve('../index'), require.resolve('vauth-login')];
+  const cached = modules.map(file => require.cache[file]);
+  for(const file of modules) delete require.cache[file];
+  try { return new (require('../index'))(); } finally {
+    modules.forEach((file, i) => { require.cache[file] = cached[i]; });
+    for(const key of Object.keys(env)) {
+      if(previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+}
+
 async function fixture(t, options = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'vvauth-test-'));
   let file;
@@ -88,13 +109,10 @@ async function fixture(t, options = {}) {
     await new Promise(resolve => server.close(resolve));
     fs.rmSync(directory, {recursive : true, force : true});
   });
-  const client = () => {
-    // Avoid reading the real user's environment/configuration/cache.
-    const instance = Object.create(Vauth.prototype);
-    instance.rc = {jwt_auth : {path : 'jwt', jwt : 'test-jwt', role : 'test-role'}};
-    instance.config = {};
-    instance._safe_vault = true;
-    instance.VAULT_ADDR = `http://127.0.0.1:${server.address().port}`;
+  const client = (settings = {}) => {
+    const rc = {vault_addr : `http://127.0.0.1:${server.address().port}`, jwt_auth : {path : 'jwt', jwt : 'test-jwt', role : 'test-role'}, ...settings.rc};
+    if(settings.noAuth) delete rc.jwt_auth;
+    const instance = configuredClient(t, rc, {VAULT_TOKEN : settings.token || '', ...settings.env});
     instance._token_cache_file = () => path.join(directory, '.vauth', 'tokens', instance._token_cache_key() + '.creds');
     return instance;
   };
@@ -189,9 +207,8 @@ for(const status of [400, 403]) {
 
 test('server failures do not generate extra tokens, and connect can be retried', async t => {
   const {client, seed, requests} = await fixture(t, {lookup_status : 500});
-  const instance = client();
+  const instance = client({token : 'uncached-token'});
   await seed(instance);
-  instance.VAULT_TOKEN = 'uncached-token';
   assert.equal(await instance.Connect(), 'uncached-token');
   await assert.rejects(instance.LookupSelf());
   await assert.rejects(instance.LookupSelf());
@@ -208,9 +225,8 @@ test('renewal server failures do not generate extra tokens', async t => {
 
 test('inherited tokens are returned offline without changing the cache', async t => {
   const {client, seed, read, requests} = await fixture(t);
-  const instance = client();
+  const instance = client({token : 'environment-token'});
   await seed(instance);
-  instance.VAULT_TOKEN = 'environment-token';
   assert.equal(await instance.Connect(), 'environment-token');
   assert.equal((await read(instance)).token, 'cached-token');
   assert.deepEqual(requests, []);
@@ -238,14 +254,12 @@ test('cache entries are isolated by Vault address and authentication configurati
   const {client, seed, read, file} = await fixture(t);
   const first = client();
   await seed(first);
-  const second = client();
-  second.rc.jwt_auth.role = 'other-role';
+  const second = client({rc : {jwt_auth : {path : 'jwt', jwt : 'test-jwt', role : 'other-role'}}});
   assert.equal(await second.Connect(), 'fresh-token');
   assert.notEqual(first._token_cache_file(), second._token_cache_file());
   assert.equal((await read(first)).token, 'cached-token');
   assert.equal((await read(second)).token, 'fresh-token');
-  const third = client();
-  third.VAULT_ADDR = 'http://other-vault.test';
+  const third = client({rc : {vault_addr : 'http://other-vault.test'}});
   assert.notEqual(third._token_cache_key(), first._token_cache_key());
   assert.equal(fs.readdirSync(path.dirname(file)).length, 2);
   assert.ok(!fs.readFileSync(file, 'utf8').includes('test-jwt'));
@@ -268,10 +282,8 @@ test('an unwritable cache does not prevent login', async t => {
 
 test('without an auth method inherited tokens are returned but caches are ignored', async t => {
   const {client, seed} = await fixture(t, {lookup_status : 403});
-  const instance = client();
-  instance.rc = {};
+  const instance = client({token : 'uncached-token', noAuth : true});
   await seed(instance);
-  instance.VAULT_TOKEN = 'uncached-token';
   instance._read_token_cache = async () => { throw new Error('No auth: no cache lookup'); };
   assert.equal(await instance.Connect(), 'uncached-token');
   assert.equal(instance.VAULT_TOKEN, 'uncached-token');
@@ -279,9 +291,8 @@ test('without an auth method inherited tokens are returned but caches are ignore
 
 test('--renew ignores both environment and cached tokens and saves a new token', async t => {
   const {client, seed, read, requests} = await fixture(t);
-  const instance = client();
+  const instance = client({token : 'environment-token'});
   await seed(instance);
-  instance.VAULT_TOKEN = 'environment-token';
   assert.equal(await instance.Connect(true), 'fresh-token');
   assert.deepEqual(requests.map(req => req.path), ['/v1/auth/jwt/login']);
   assert.equal((await read(instance)).token, 'fresh-token');
@@ -308,8 +319,7 @@ test('each successive --renew call forces a new login', async t => {
 
 test('--renew without an authentication method remains a no-op', async t => {
   const {client} = await fixture(t);
-  const instance = client();
-  instance.rc = {};
+  const instance = client({noAuth : true});
   assert.equal(await instance.Connect(true), undefined);
 });
 
@@ -330,7 +340,7 @@ for(const flag of ['renew']) {
       await seed(instance);
       const home = path.dirname(path.dirname(path.dirname(file)));
       const rc = path.join(home, '.vauthrc');
-      fs.writeFileSync(rc, JSON.stringify({vault_addr : instance.VAULT_ADDR, ...instance.rc}));
+      fs.writeFileSync(rc, JSON.stringify({vault_addr : instance.VAULT_ADDR, ...instance.RC}));
       const options = {
         cwd : home,
         env : {...process.env, HOME : home, VAUTHRC : rc, VAULT_TOKEN : 'environment-token', SSH_AUTH_SOCK : process.env.SSH_AUTH_SOCK},
@@ -378,7 +388,7 @@ test('installed venv forwards --renew through the real CLI', async t => {
   fs.mkdirSync(bin);
   fs.symlinkSync(path.resolve(__dirname, '..', 'index.js'), path.join(bin, 'vauth'));
   const rc = path.join(home, '.vauthrc');
-  fs.writeFileSync(rc, JSON.stringify({vault_addr : instance.VAULT_ADDR, ...instance.rc}));
+  fs.writeFileSync(rc, JSON.stringify({vault_addr : instance.VAULT_ADDR, ...instance.RC}));
   const options = {
     cwd : home,
     env : {...process.env, HOME : home, VAUTHRC : rc, VAULT_TOKEN : '', SSH_AUTH_SOCK : process.env.SSH_AUTH_SOCK, PATH : `${bin}:${process.env.PATH}`},
@@ -447,7 +457,6 @@ function captureStatus(callback) {
 
 test('token status uses humanDiff with two significant units', () => {
   const instance = Object.create(Vauth.prototype);
-  instance.VAULT_ADDR = 'https://vault.example.test';
   const cases = [
     [2 * 86400 + 3 * HOUR + 20 * 60 + 5, '2d 3h'],
     [12 * HOUR + 30 * 60 + 5, '12h 30m'],
@@ -552,9 +561,8 @@ test('renewal updates the lease baseline to the newly granted duration', async t
 
 test('normal reuse never writes the token cache', async t => {
   const {client, seed, file, requests} = await fixture(t);
-  const instance = client();
+  const instance = client({token : 'cached-token'});
   await seed(instance);
-  instance.VAULT_TOKEN = 'cached-token';
   const before = fs.readFileSync(file, 'utf8');
   const stat = fs.statSync(file);
   instance._save_cached_token = () => { throw new Error('Reuse must not write'); };
@@ -580,8 +588,7 @@ test('lookup returns the lease duration and preserves a cached renewal baseline'
 
 test('token_cache false skips all cache filesystem access', async t => {
   const {client, requests, file} = await fixture(t);
-  const instance = client();
-  instance.rc.token_cache = false;
+  const instance = client({rc : {token_cache : false}});
   instance._token_cache_file = () => { throw new Error('Disabled cache must not access disk'); };
   assert.equal(await instance.Connect(), 'fresh-token');
   assert.equal(fs.existsSync(file), false);
@@ -590,23 +597,19 @@ test('token_cache false skips all cache filesystem access', async t => {
 
 test('token_cache false ignores existing tokens on disk without deleting them', async t => {
   const {client, seed, requests, file} = await fixture(t);
-  const instance = client();
-  await seed(instance);
+  await seed(client());
+  const instance = client({rc : {token_cache : false}});
   const before = fs.readFileSync(file, 'utf8');
-  instance.rc.token_cache = false;
   assert.equal(await instance.Connect(), 'fresh-token');
   assert.equal(fs.readFileSync(file, 'utf8'), before);
-  const second = client();
-  second.rc.token_cache = false;
+  const second = client({rc : {token_cache : false}});
   assert.equal(await second.Connect(), 'fresh-token');
   assert.equal(requests.filter(req => req.path.endsWith('/login')).length, 2);
 });
 
 test('token_cache false still respects an environment token without persisting it', async t => {
   const {client, requests, file} = await fixture(t);
-  const instance = client();
-  instance.rc.token_cache = false;
-  instance.VAULT_TOKEN = 'environment-token';
+  const instance = client({token : 'environment-token', rc : {token_cache : false}});
   assert.equal(await instance.Connect(), 'environment-token');
   assert.deepEqual(requests, []);
   assert.equal(fs.existsSync(file), false);
@@ -617,7 +620,7 @@ test('real CLI reads token_cache false from .vauthrc', async t => {
   const instance = client();
   const home = path.dirname(path.dirname(path.dirname(file)));
   const rc = path.join(home, '.vauthrc');
-  fs.writeFileSync(rc, JSON.stringify({vault_addr : instance.VAULT_ADDR, ...instance.rc, token_cache : false}));
+  fs.writeFileSync(rc, JSON.stringify({vault_addr : instance.VAULT_ADDR, ...instance.RC, token_cache : false}));
   const cli = path.resolve(__dirname, '..', 'index.js');
   for(let i = 0; i < 2; i++) {
     const output = await exec(process.execPath, [cli, 'login', '--source'], {
@@ -658,14 +661,13 @@ test('a plaintext cache is not accepted as a token cache', async t => {
 
 test('without an SSH agent cache is skipped silently', async t => {
   const {client, file} = await fixture(t);
-  const instance = client();
+  const instance = client({env : {SSH_AUTH_SOCK : ''}});
   instance._token_cache_file = () => { throw new Error('No agent: no disk access'); };
   const socket = process.env.SSH_AUTH_SOCK;
   const original = console.error;
   const messages = [];
   try {
     delete process.env.SSH_AUTH_SOCK;
-    instance.rc.token_cache = false;
     console.error = (...args) => messages.push(format(...args));
     assert.equal(await instance.Connect(), 'fresh-token');
   } finally {
@@ -680,13 +682,12 @@ test('without an SSH agent cache is skipped silently', async t => {
 
 test('without an SSH agent existing armor is left untouched', async t => {
   const {client, seed, file} = await fixture(t);
-  const instance = client();
-  await seed(instance);
+  await seed(client());
+  const instance = client({env : {SSH_AUTH_SOCK : ''}});
   const before = fs.readFileSync(file, 'utf8');
   const socket = process.env.SSH_AUTH_SOCK;
   try {
     delete process.env.SSH_AUTH_SOCK;
-    instance.rc.token_cache = false;
     await instance._save_cached_token('replacement-token', {lease_duration : 86400, renewable : true});
   } finally {
     process.env.SSH_AUTH_SOCK = socket;
@@ -701,17 +702,18 @@ test('constructor disables token caching when no SSH agent is configured', async
   const instance = client();
   const home = path.dirname(path.dirname(path.dirname(file)));
   const rc = path.join(home, '.vauthrc');
-  fs.writeFileSync(rc, JSON.stringify({vault_addr : instance.VAULT_ADDR, ...instance.rc, token_cache : true}));
+  fs.writeFileSync(rc, JSON.stringify({vault_addr : instance.VAULT_ADDR, ...instance.RC, token_cache : true}));
   const module_path = path.resolve(__dirname, '..', 'index.js');
   const script = `const Vauth = require(${JSON.stringify(module_path)});
     const instance = new Vauth();
-    process.stdout.write(String(instance.rc.token_cache));
-    instance.Login().catch(() => process.exit(1));`;
+    let accesses = 0;
+    instance._token_cache_file = () => { accesses++; throw new Error('Cache must be disabled'); };
+    instance.Login().then(() => process.stdout.write(String(accesses))).catch(() => process.exit(1));`;
   const output = await exec(process.execPath, ['-e', script], {
     cwd : home,
     env : {...process.env, HOME : home, VAUTHRC : rc, VAULT_TOKEN : '', SSH_AUTH_SOCK : ''},
   });
-  assert.equal(output.stdout.trim(), 'false');
+  assert.equal(output.stdout.trim(), '0');
   assert.ok(!output.stderr.includes('token not persisted'));
   assert.equal(fs.existsSync(file), false);
 });
@@ -784,15 +786,13 @@ test('.creds decryption failures reject instead of exiting successfully', async 
 for(const inherited of ['', 'inherited-token']) {
   test(`local .creds environment works offline with inherited token=${!!inherited}`, async t => {
     const {client, file, requests} = await fixture(t, {lookup_status : 503});
-    const instance = client();
+    const instance = client({noAuth : true, token : inherited});
     const credentials = path.join(path.dirname(path.dirname(path.dirname(file))), '.creds');
     fs.writeFileSync(credentials, await encrypt(JSON.stringify({ARM_CLIENT_SECRET : 'local-secret', VAULT_TOKEN : 'local-token'})));
-    instance.rc = {};
     instance.config = {
       'ssh-agent-crypt' : {path : credentials},
       env : {map : {ARM_CLIENT_SECRET : '$${secrets.ARM_CLIENT_SECRET}', VAULT_TOKEN : '$${secrets.VAULT_TOKEN}'}},
     };
-    instance.VAULT_TOKEN = inherited;
     instance.LookupSelf = async () => { throw new Error('Local environment must not contact Vault'); };
     instance._read_token_cache = async () => { throw new Error('Local environment must not read the token cache'); };
     const env = await instance.Env();
@@ -812,14 +812,19 @@ test('Windows keeps cache enabled and selects Pageant without SSH_AUTH_SOCK', as
   const script = `const Vauth = require(${JSON.stringify(module_path)});
     Object.defineProperty(process, 'platform', {value: 'win32'});
     const instance = new Vauth();
-    const result = {cacheDisabled: instance.rc.token_cache === false, role: instance.rc.ssh_auth.role};
-    instance._read_token_cache = async () => undefined;
+    const result = {role: instance.RC.ssh_auth.role};
+    let attempts = 0;
+    instance._token_cache_file = () => { attempts++; return ${JSON.stringify(path.join(home, 'missing-cache'))}; };
     instance._save_cached_token = async () => {};
     instance._login_vault_ssh = async (auth, agent) => {
       result.agent = agent;
       return {client_token: 'windows-test-token', lease_duration: 86400, renewable: true};
     };
-    instance.Connect().then(() => process.stdout.write(JSON.stringify(result))).catch(() => process.exit(1));`;
+    instance._read_token_cache().then(() => {
+      result.cacheDisabled = attempts === 0;
+      instance._read_token_cache = async () => undefined;
+      return instance.Connect();
+    }).then(() => process.stdout.write(JSON.stringify(result))).catch(() => process.exit(1));`;
   const output = await exec(process.execPath, ['-e', script], {
     cwd : home,
     env : {...process.env, VAUTHRC : rc, VAULT_TOKEN : '', SSH_AUTH_SOCK : ''},
@@ -899,4 +904,51 @@ test('an unknown project Vault cannot receive inherited credentials through env 
   for(const command of ['Request', 'LookupSelf', 'request', 'lookupSelf'])
     await assert.rejects(exec(process.execPath, [cli, command], options), /Usage:/);
   assert.deepEqual(f.requests, []);
+});
+
+test('constructor consumes one frozen RC snapshot without reopening the selected file', t => {
+  const document = {env : {map : {VALUE : '$${env.LOCAL_VALUE}', USER : '$${profile.USER}'}}, extra : {nested : ['retained']}};
+  const read = fs.readFileSync;
+  let reads = 0;
+  fs.readFileSync = function(file, ...args) {
+    const body = read.call(this, file, ...args);
+    if(file === process.env.VAUTHRC) {
+      reads++;
+      fs.unlinkSync(file);
+    }
+    return body;
+  };
+  let v;
+  try {
+    v = configuredClient(t, document, {LOCAL_VALUE : 'local-value', VAULT_ADDR : 'https://vault.example.test'});
+  } finally {
+    fs.readFileSync = read;
+  }
+  assert.equal(reads, 1);
+  assert.deepEqual(v.RC, document);
+  assert.equal(v.config.env.map.VALUE, 'local-value');
+  assert.equal(v.config.env.map.USER, '$${profile.USER}');
+  v.config.env.map.VALUE = 'consumer-value';
+  assert.equal(v.RC.env.map.VALUE, '$${env.LOCAL_VALUE}');
+  assert.ok(Object.isFrozen(v.RC.env.map));
+  assert.equal(v.rc, undefined);
+  assert.equal(v.rc_file, undefined);
+});
+
+test('env.gitlab uses the working repository when VAUTHRC lives elsewhere', async t => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'vvauth-git-project-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'vvauth-git-config-'));
+  t.after(() => fs.rmSync(project, {recursive : true, force : true}));
+  t.after(() => fs.rmSync(home, {recursive : true, force : true}));
+  assert.equal(spawnSync('git', ['init', '-q', project]).status, 0);
+  assert.equal(spawnSync('git', ['-C', project, 'remote', 'add', 'origin', 'git@git.example.test:Team/app.git']).status, 0);
+  const file = path.join(home, '.vauthrc');
+  fs.writeFileSync(file, JSON.stringify({env : {gitlab : true, map : {PROJECT : '$${env.CI_PROJECT_PATH}'}}}));
+  const script = `const V = require(${JSON.stringify(path.resolve(__dirname, '..', 'index.js'))}); process.stdout.write(JSON.stringify(new V().config));`;
+  for(const CI of ['', '1']) {
+    const {stdout} = await exec(process.execPath, ['-e', script], {
+      cwd : project, env : {...process.env, HOME : home, VAUTHRC : file, VAULT_TOKEN : '', VAULT_ADDR : '', CI, CI_PROJECT_PATH : 'pipeline/project'},
+    });
+    assert.equal(JSON.parse(stdout).env.map.PROJECT, CI ? 'pipeline/project' : 'Team/app');
+  }
 });

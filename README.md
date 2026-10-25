@@ -1,9 +1,14 @@
 # vvauth
 
+Node.js 16 or newer is supported; CI includes Node 16 JavaScript syntax and
+module/CLI loading checks alongside the existing test suites.
+
 Resolve a shell environment from your Vault identity, private settings and
 secrets. [vauth-login](https://github.com/131/vauth-login) handles authentication,
 token caching and HTTP; vvauth owns profiles, macro expansion, KV operations
 and environment publication. Available as a Node module/CLI and a Go module/CLI.
+Both consume vauth-login 1.1.5's complete read-only RC and token/address readers;
+vvauth copies its own sections for macro expansion without reopening the file.
 
 # Installation
 
@@ -121,7 +126,7 @@ Set `token_cache: false` in `.vauthrc` to disable disk cache reads and writes.
 ## Security audit
 
 The reports below describe the pre-integration implementation. This integration
-uses vauth-login 1.1.3 without regenerating or rewriting their findings/scores.
+uses vauth-login 1.1.5 without regenerating or rewriting their findings/scores.
 
 
 Two independent reviews of the design and of both implementations (Node, Go),

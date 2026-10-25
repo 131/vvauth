@@ -5,8 +5,8 @@ module github.com/131/vvauth/v2
 go 1.22
 
 require (
-	github.com/131/ssh-agent-crypt v1.4.1
-	github.com/131/vauth-login v1.1.3
+	github.com/131/ssh-agent-crypt v1.4.2
+	github.com/131/vauth-login v1.1.5
 	github.com/Masterminds/semver/v3 v3.5.0
 	gopkg.in/yaml.v3 v3.0.1
 )

@@ -56,6 +56,10 @@ armored with [ssh-agent-crypt](https://github.com/131/ssh-agent-crypt);
 
 ## Node module
 
+Node.js 16 or newer is supported. CI checks JavaScript syntax and CLI/module
+loading on Node 16 separately from the existing suite. JSON copies use
+`nyks/object/structuredClone`, native when available with a JSON fallback.
+
 ```js
 const Vauth = require('vvauth');
 const vauth = new Vauth();             // reads .vauthrc and process.env
@@ -70,8 +74,10 @@ Node extends the vauth-login client directly. `Connect`, `LookupSelf` and
 `Request` are inherited, not forwarded through compatibility wrappers.
 `GetProfile`, `Env`, `Show`, `Set`, `Unset`, `Login`, `Dotenv`, `Run` and
 `PublishEnv` own the environment/profile behavior. `Version()` is static.
-`rc`/`rc_file` and token/transport state belong to vauth-login; `config` contains
-only `env` and `ssh-agent-crypt` settings.
+`RC`, `VAULT_ADDR` and `VAULT_TOKEN` are the inherited read-only getters.
+`config` contains a mutable copy of only `env` and `ssh-agent-crypt`, with local
+`env` macros expanded; the full frozen RC retains original values/macros.
+vvauth does not reopen the selected configuration file.
 
 `Env(true)`, `Login(true)`, `Dotenv()` and `PublishEnv()` write to stdout but do
 not exit the SDK caller. `Run(command, ...args)` returns the child's exit code;
@@ -86,7 +92,7 @@ import vvauth "github.com/131/vvauth/v2"
 
 v, err := vvauth.New()                 // .vauthrc + os.Environ()
 token, err := v.Connect(false)         // renew bool
-env, err := v.Env(false)               // *OrderedMap, document order
+env, err := v.Env(false)               // *OrderedMap, deterministic output order
 profile, err := v.GetProfile(false)    // EntityID, Metadata, Database; Merged()
 err = v.Login(source, renew)
 err = v.Set("KEY", "value"); err = v.Unset("KEY")
@@ -95,13 +101,24 @@ v.PublishEnv(env)                      // export lines on stdout, redacted echo 
 ```
 
 `Vauth` embeds `*vauthlogin.Vauth`; `Connect`, `LookupSelf` and `Request`,
-authentication `RC`, `VaultAddr`, `VaultToken`, `Agent`, `TokenCache`, `CacheDir`,
-`HomeDir`, `Environ`, `Stderr`, `Now` and `HTTPClient` are owned by that client.
+the read-only `RC()`, `VAULT_ADDR()` and `VAULT_TOKEN()` readers, plus mutable
+`Agent`, `TokenCache`, `CacheDir`, `HomeDir`, `Environ`, `Stderr`, `Now` and
+`HTTPClient` settings, are owned by that client.
 Use `New()` or supply the embedded client explicitly for isolated programmatic
 use. `Config` holds only `Env`/`AgentCrypt`; `Stdout`/`Stdin` belong to vvauth.
 `ParseConfig`, `ReplaceEnv`, `ShellEscape` and `FunctionExists` support environment and shell operations.
-There is no second auth parser, token lifecycle, cache implementation or HTTP
-transport in vvauth.
+Construction consumes `RC()` directly: an independent JSON snapshot is decoded
+into vvauth's own configuration, without reopening its file. The JSON map does
+not retain YAML key order; `env.map` keys from this path have deterministic sorted
+order. Explicit `OrderedMap.Set` calls and standalone `ParseConfig` keep their
+insertion/YAML order. There is no second auth parser, token lifecycle, cache
+implementation or HTTP transport in vvauth.
+
+Node and Go consume vauth-login 1.1.5 and ssh-agent-crypt 1.4.2; Node uses nyks
+6.17.0. `env.gitlab` derives `CI_PROJECT_*` from the current working repository,
+including when `VAUTHRC` is elsewhere. In CI, supplied variables are retained.
+This is distinct from standalone Go `ParseConfig`, whose explicit file argument
+identifies its Git directory.
 
 The SDK keeps language-native conventions: promises/throws in Node,
 values plus errors in Go. Node `Env(source, renew)` can publish directly;

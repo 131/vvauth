@@ -216,17 +216,33 @@ func mappingValue(node *yaml.Node, key string) *yaml.Node {
 	return nil
 }
 
-// ParseConfig expands environment/profile sections. With env.gitlab outside
-// CI, CI_PROJECT_* variables come from the selected file's Git remote.
+// ParseConfig expands environment/profile sections from a standalone YAML body.
+// With env.gitlab outside CI, CI_PROJECT_* comes from the file's Git repository.
 func ParseConfig(body []byte, file string, environ map[string]string) (*Config, error) {
 	var document yaml.Node
 	if err := yaml.Unmarshal(body, &document); err != nil {
 		return nil, fmt.Errorf("Could not parse %s: %w", file, err)
 	}
-	if len(document.Content) == 0 {
-		return &Config{}, nil
+	return compileConfig(&document, file, filepath.Dir(file), environ)
+}
+
+// configFromRC consumes the independent JSON snapshot without reopening its file.
+func configFromRC(rc map[string]any, dir string, environ map[string]string) (*Config, error) {
+	var document yaml.Node
+	if err := document.Encode(rc); err != nil {
+		return nil, fmt.Errorf("Could not read RC: %w", err)
 	}
-	root := document.Content[0]
+	return compileConfig(&document, "RC", dir, environ)
+}
+
+func compileConfig(document *yaml.Node, file, dir string, environ map[string]string) (*Config, error) {
+	root := document
+	if root.Kind == yaml.DocumentNode {
+		if len(root.Content) == 0 {
+			return &Config{}, nil
+		}
+		root = root.Content[0]
+	}
 	if root.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("Could not parse %s: expected a mapping", file)
 	}
@@ -238,10 +254,10 @@ func ParseConfig(body []byte, file string, environ map[string]string) (*Config, 
 		}
 	}
 	root.Content = content
-	if gitlab := mappingValue(mappingValue(&document, "env"), "gitlab"); gitlab != nil && truthy(gitlab) && environ["CI"] == "" {
-		environ = withGitLabProject(environ, filepath.Dir(file))
+	if gitlab := mappingValue(mappingValue(document, "env"), "gitlab"); gitlab != nil && truthy(gitlab) && environ["CI"] == "" {
+		environ = withGitLabProject(environ, dir)
 	}
-	walk(&document, func(value string) string { return ReplaceEnv(value, Lookup{"env": environ}) })
+	walk(document, func(value string) string { return ReplaceEnv(value, Lookup{"env": environ}) })
 	var config Config
 	if err := document.Decode(&config); err != nil {
 		return nil, fmt.Errorf("Could not parse %s: %w", file, err)

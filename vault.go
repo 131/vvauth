@@ -11,7 +11,7 @@ import (
 // vaultRead returns the data of a kv2 secret.
 func (v *Vauth) vaultRead(mount, secretPath string, optional bool) (map[string]any, error) {
 	secretPath = strings.Trim(secretPath, "/")
-	status, response, err := v.Request("GET", mount+"/data/"+secretPath, v.VaultToken, nil, 0)
+	status, response, err := v.Request("GET", mount+"/data/"+secretPath, v.VAULT_TOKEN(), nil, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +35,7 @@ func (v *Vauth) vaultRead(mount, secretPath string, optional bool) (map[string]a
 // vaultWrite replaces the data of a kv2 secret.
 func (v *Vauth) vaultWrite(mount, secretPath string, data map[string]any) error {
 	secretPath = strings.Trim(secretPath, "/")
-	status, response, err := v.Request("POST", mount+"/data/"+secretPath, v.VaultToken, map[string]any{"data": data}, 0)
+	status, response, err := v.Request("POST", mount+"/data/"+secretPath, v.VAULT_TOKEN(), map[string]any{"data": data}, 0)
 	if err != nil {
 		return err
 	}
