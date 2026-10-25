@@ -1,6 +1,6 @@
 module github.com/131/vvauth/v2
 
-// version: 2.6.0
+// version: 2.6.1
 
 go 1.22
 
