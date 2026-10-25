@@ -14,6 +14,7 @@ const readline = require('readline');
 const semver     = require('semver');
 const trim       = require('mout/string/trim');
 const get        = require('mout/object/get');
+const isPrimitive = require('mout/lang/isPrimitive');
 const walk       = require('nyks/object/walk');
 const structuredClone = require('nyks/object/structuredClone');
 
@@ -259,7 +260,7 @@ class Vvauth extends VauthLogin {
 const envValue = (value, key) => {
   if(value == null)
     return '';
-  if(!['string', 'number', 'boolean'].includes(typeof value) || (typeof value === 'number' && !Number.isFinite(value)))
+  if(!isPrimitive(value) || (typeof value === 'number' && !Number.isFinite(value)))
     throw new Error(`Invalid environment value '${key}' in env.map: expected a scalar`);
   return String(value);
 };
