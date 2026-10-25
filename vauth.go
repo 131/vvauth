@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 
+	nyksstring "github.com/131/nyks/v6/string"
 	sshagentcrypt "github.com/131/ssh-agent-crypt"
 	vauthlogin "github.com/131/vauth-login"
 	"github.com/Masterminds/semver/v3"
@@ -309,25 +310,14 @@ func (v *Vauth) Env(renew bool) (*OrderedMap, error) {
 			secrets[k] = val
 		}
 	}
-	dict := Lookup{"env": v.Environ, "profile": merged, "secrets": secrets}
+	dict := map[string]any{"env": v.Environ, "profile": merged, "secrets": secrets}
 	for _, key := range mapping.Keys {
 		if !envName.MatchString(key) {
 			return nil, fmt.Errorf("Invalid environment variable name '%s' in env.map", key)
 		}
-		var expansionErr error
-		value := replaceEnv(mapping.Values[key], func(path string) (string, bool) {
-			raw, ok := dict.get(path)
-			if !ok {
-				return "", false
-			}
-			text, err := envValue(raw)
-			if err != nil {
-				expansionErr = fmt.Errorf("Invalid environment value '%s' in env.map: %w", key, err)
-			}
-			return text, err == nil
-		})
-		if expansionErr != nil {
-			return nil, expansionErr
+		value, err := envValue(nyksstring.ReplaceEnv(mapping.Values[key], dict))
+		if err != nil {
+			return nil, fmt.Errorf("Invalid environment value '%s' in env.map: %w", key, err)
 		}
 		env.Set(key, value)
 	}

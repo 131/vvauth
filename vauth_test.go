@@ -195,7 +195,7 @@ type tokenCache struct {
 }
 
 func testCacheKey(v *Vauth) string {
-	key := `{"vault_addr":` + string(jsonString(strings.Trim(v.VAULT_ADDR(), "/")))
+	key := strings.Trim(v.VAULT_ADDR(), "/")
 	body, err := json.Marshal(v.RC())
 	if err != nil {
 		panic(err)
@@ -204,10 +204,7 @@ func testCacheKey(v *Vauth) string {
 	if err != nil {
 		panic(err)
 	}
-	if auth := rc.AuthKey(); auth != "" {
-		key += "," + auth
-	}
-	return sha256Hex(key + "}")
+	return sha256Hex(key + "/" + rc.AuthKey())
 }
 
 func cacheFile(v *Vauth) string { return filepath.Join(v.CacheDir, testCacheKey(v)+".creds") }
@@ -462,11 +459,11 @@ func TestCacheIsolation(t *testing.T) {
 
 func TestTokenCacheKeyMatchesNode(t *testing.T) {
 	v := configuredClient(t, map[string]any{"vault_addr": "https://vault.example.test/", "ssh_auth": map[string]any{"role": "alice"}}, nil)
-	equal(t, testCacheKey(v), sha256Hex(`{"vault_addr":"https://vault.example.test","ssh_auth":{"role":"alice"}}`))
+	equal(t, testCacheKey(v), sha256Hex(`https://vault.example.test/ssh/alice//`))
 	v = configuredClient(t, map[string]any{"vault_addr": "https://vault.example.test", "jwt_auth": map[string]any{"path": "jwt", "jwt": "x", "role": "r"}}, nil)
-	equal(t, testCacheKey(v), sha256Hex(`{"vault_addr":"https://vault.example.test","jwt_auth":{"jwt":"x","path":"jwt","role":"r"}}`))
+	equal(t, testCacheKey(v), sha256Hex(`https://vault.example.test//jwt/r/jwt/x`))
 	v = configuredClient(t, map[string]any{"vault_addr": "https://vault.example.test", "ssh_auth": map[string]any{"role": "$${env.USER}"}}, map[string]string{"USER": "bob"})
-	equal(t, testCacheKey(v), sha256Hex(`{"vault_addr":"https://vault.example.test","ssh_auth":{"role":"bob"}}`))
+	equal(t, testCacheKey(v), sha256Hex(`https://vault.example.test/ssh/bob//`))
 }
 
 func TestRepeatedConnectReusesConnection(t *testing.T) {
@@ -703,14 +700,6 @@ func TestOneStatusPerConnection(t *testing.T) {
 	equal(t, stderr.String(), "")
 }
 
-func TestReplaceEnv(t *testing.T) {
-	dict := Lookup{"env": map[string]string{"USER": "alice"}, "profile": map[string]any{"TOKEN": "secret", "N": 3}}
-	equal(t, ReplaceEnv("$${env.USER}", dict), "alice")
-	equal(t, ReplaceEnv("x-$${profile.TOKEN}-$${profile.N}", dict), "x-secret-3")
-	equal(t, ReplaceEnv("$${profile.MISSING}", dict), "$${profile.MISSING}") // unresolved macros are kept, like nyks
-	equal(t, ReplaceEnv("plain", dict), "plain")
-}
-
 func sha256Hex(value string) string {
 	digest := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(digest[:])
@@ -915,4 +904,18 @@ func TestEnvMapRejectsObjectValuesAndMacros(t *testing.T) {
 			t.Fatalf("%s: %q != %q", key, actual, value)
 		}
 	}
+}
+
+func TestConfigWalkPreservesKeysAndSnapshot(t *testing.T) {
+	raw := map[string]any{"env": map[string]any{"map": map[string]any{"$${env.KEY}": "$${env.VALUE}"}}}
+	config, err := configFromRC(raw, map[string]string{"KEY": "ACTUAL", "VALUE": "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, ok := config.Env.Map.Get("$${env.KEY}")
+	if !ok {
+		t.Fatal("walker changed a mapping key")
+	}
+	equal(t, value, "done")
+	equal(t, raw["env"].(map[string]any)["map"].(map[string]any)["$${env.KEY}"], "$${env.VALUE}")
 }

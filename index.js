@@ -68,7 +68,7 @@ class Vvauth extends VauthLogin {
    */ {
     const remote = String(await exec('git', ['remote', 'get-url', 'origin'], {stdio : ['ignore', 'pipe', 'ignore']})).trim();
     const match = remote.includes('://') ? null : remote.match(/^[^@]+@[^:]+:(.+)$/);
-    const project = trim(match ? match[1] : new URL(remote).pathname, '/').replace(/\.git$/, '');
+    const project = trim(match ? match[1] : decodeURIComponent(new URL(remote).pathname), '/').replace(/\.git$/, '');
     if(!project)
       throw new Error('Could not resolve the Git project from origin');
     const parts = project.split('/');

@@ -100,6 +100,11 @@ SSH-agent-backed local secret decryption, inherited tokens and forced renewal.
 becomes empty, and objects/arrays are rejected, including macro results. Raw RC
 values retain their JSON types. Missing Git identity fields export empty values.
 
+Go macro expansion and value walking come from `github.com/131/nyks/v6`.
+Configuration operates on JSON-compatible values rather than round-tripping
+RC through a YAML tree. Walking preserves keys and the raw RC snapshot;
+`env.map` validation and scalar-to-string conversion remain in vvauth.
+
 ## Verification
 
 ```bash

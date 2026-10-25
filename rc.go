@@ -4,37 +4,37 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strconv"
-	"strings"
 
+	nyksobject "github.com/131/nyks/v6/object"
+	nyksstring "github.com/131/nyks/v6/string"
 	"gopkg.in/yaml.v3"
 )
 
 // Config contains only environment/profile settings; authentication is
 // parsed and owned by vauth-login.
 type Config struct {
-	AgentCrypt *AgentCrypt `yaml:"ssh-agent-crypt"`
-	Env        *EnvConfig  `yaml:"env"`
+	AgentCrypt *AgentCrypt `json:"ssh-agent-crypt" yaml:"ssh-agent-crypt"`
+	Env        *EnvConfig  `json:"env" yaml:"env"`
 }
 
 // AgentCrypt points to a local ssh-agent-crypt armored JSON file whose keys
 // feed $${secrets.X}.
 type AgentCrypt struct {
-	Path     string `yaml:"path"`
-	Identity string `yaml:"identity"`
+	Path     string `json:"path" yaml:"path"`
+	Identity string `json:"identity" yaml:"identity"`
 }
 
 // EnvConfig describes the environment to resolve.
 type EnvConfig struct {
-	Map    OrderedMap `yaml:"map"`
-	Paths  []string   `yaml:"paths"`
-	Path   string     `yaml:"path"`
-	Git    bool       `yaml:"git"`
-	GitLab bool       `yaml:"gitlab"`
+	Map    OrderedMap `json:"map" yaml:"map"`
+	Paths  []string   `json:"paths" yaml:"paths"`
+	Path   string     `json:"path" yaml:"path"`
+	Git    bool       `json:"git" yaml:"git"`
+	GitLab bool       `json:"gitlab" yaml:"gitlab"`
 }
 
-// OrderedMap keeps the YAML document order of a string mapping.
+// OrderedMap keeps the decoded JSON order of a string mapping.
 type OrderedMap struct {
 	Keys   []string
 	Values map[string]string
@@ -60,18 +60,24 @@ func (m *OrderedMap) Get(key string) (string, bool) {
 // Len returns the number of entries.
 func (m *OrderedMap) Len() int { return len(m.Keys) }
 
-// UnmarshalYAML decodes a mapping, scalars as strings.
-func (m *OrderedMap) UnmarshalYAML(node *yaml.Node) error {
-	if node.Kind != yaml.MappingNode {
-		return fmt.Errorf("line %d: expected a mapping", node.Line)
+// UnmarshalJSON decodes scalar values while retaining their JSON key order.
+func (m *OrderedMap) UnmarshalJSON(body []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	token, err := decoder.Token()
+	if err != nil {
+		return err
 	}
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		var key string
-		var value any
-		if err := node.Content[i].Decode(&key); err != nil {
+	if token != json.Delim('{') {
+		return fmt.Errorf("expected a mapping")
+	}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
 			return err
 		}
-		if err := node.Content[i+1].Decode(&value); err != nil {
+		key := token.(string)
+		var value any
+		if err := decoder.Decode(&value); err != nil {
 			return err
 		}
 		text, err := envValue(value)
@@ -80,7 +86,8 @@ func (m *OrderedMap) UnmarshalYAML(node *yaml.Node) error {
 		}
 		m.Set(key, text)
 	}
-	return nil
+	_, err = decoder.Token()
+	return err
 }
 
 // MarshalJSON renders the entries in order.
@@ -97,38 +104,6 @@ func (m OrderedMap) MarshalJSON() ([]byte, error) {
 	}
 	out.WriteByte('}')
 	return out.Bytes(), nil
-}
-
-// Lookup resolves dotted paths ($${env.X}) in nested string maps.
-type Lookup map[string]any
-
-func (dict Lookup) get(path string) (any, bool) {
-	var current any = map[string]any(dict)
-	for _, part := range strings.Split(path, ".") {
-		switch node := current.(type) {
-		case map[string]any:
-			value, ok := node[part]
-			if !ok {
-				return nil, false
-			}
-			current = value
-		case map[string]string:
-			value, ok := node[part]
-			if !ok {
-				return nil, false
-			}
-			current = value
-		case Lookup:
-			value, ok := node[part]
-			if !ok {
-				return nil, false
-			}
-			current = value
-		default:
-			return nil, false
-		}
-	}
-	return current, true
 }
 
 func stringify(value any) (string, bool) {
@@ -179,56 +154,6 @@ func envValue(value any) (string, error) {
 	return "", fmt.Errorf("expected a scalar")
 }
 
-var macroPattern = regexp.MustCompile(`(?i)\$\$([a-z0-9._-]+)|\$\$\{([^}]+)\}`)
-
-// ReplaceEnv expands $$key and $${key} macros against dict (nyks
-// string/replaceEnv semantics): unknown keys stay, expansions recurse.
-func ReplaceEnv(str string, dict Lookup) string {
-	return replaceEnv(str, func(key string) (string, bool) {
-		value, ok := dict.get(key)
-		if !ok {
-			return "", false
-		}
-		return stringify(value)
-	})
-}
-
-func replaceEnv(str string, lookup func(string) (string, bool)) string {
-	for depth := 0; depth < 16; depth++ {
-		touched := false
-		str = macroPattern.ReplaceAllStringFunc(str, func(macro string) string {
-			match := macroPattern.FindStringSubmatch(macro)
-			key := match[1]
-			if key == "" {
-				key = match[2]
-			}
-			value, ok := lookup(key)
-			if !ok {
-				return macro
-			}
-			touched = true
-			return value
-		})
-		if !touched {
-			break
-		}
-	}
-	return str
-}
-
-// walk expands every scalar string of a YAML tree in place.
-func walk(node *yaml.Node, process func(string) string) {
-	if node.Kind == yaml.ScalarNode {
-		if node.Tag == "!!str" || node.Tag == "" {
-			node.Value = process(node.Value)
-		}
-		return
-	}
-	for _, child := range node.Content {
-		walk(child, process)
-	}
-}
-
 // jsonString encodes like JSON.stringify (no HTML escaping).
 func jsonString(value string) []byte {
 	var out bytes.Buffer
@@ -240,44 +165,43 @@ func jsonString(value string) []byte {
 
 // ParseConfig expands environment/profile sections from a standalone YAML body.
 func ParseConfig(body []byte, file string, environ map[string]string) (*Config, error) {
-	var document yaml.Node
-	if err := yaml.Unmarshal(body, &document); err != nil {
+	var rc map[string]any
+	if err := yaml.Unmarshal(body, &rc); err != nil {
 		return nil, fmt.Errorf("Could not parse %s: %w", file, err)
 	}
-	return compileConfig(&document, file, environ)
+	return compileConfig(rc, file, environ)
 }
 
-// configFromRC consumes the independent JSON snapshot without reopening its file.
+// configFromRC consumes the independent JSON snapshot without a YAML roundtrip.
 func configFromRC(rc map[string]any, environ map[string]string) (*Config, error) {
-	var document yaml.Node
-	if err := document.Encode(rc); err != nil {
-		return nil, fmt.Errorf("Could not read RC: %w", err)
-	}
-	return compileConfig(&document, "RC", environ)
+	return compileConfig(rc, "RC", environ)
 }
 
-func compileConfig(document *yaml.Node, file string, environ map[string]string) (*Config, error) {
-	root := document
-	if root.Kind == yaml.DocumentNode {
-		if len(root.Content) == 0 {
-			return &Config{}, nil
-		}
-		root = root.Content[0]
-	}
-	if root.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("Could not parse %s: expected a mapping", file)
-	}
-	var content []*yaml.Node
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		switch root.Content[i].Value {
-		case "env", "ssh-agent-crypt":
-			content = append(content, root.Content[i], root.Content[i+1])
+func compileConfig(rc map[string]any, file string, environ map[string]string) (*Config, error) {
+	selected := map[string]any{}
+	for _, key := range []string{"env", "ssh-agent-crypt"} {
+		if value, ok := rc[key]; ok {
+			selected[key] = value
 		}
 	}
-	root.Content = content
-	walk(document, func(value string) string { return ReplaceEnv(value, Lookup{"env": environ}) })
+	// Clone the selected sections before Walk, preserving the raw RC snapshot.
+	body, err := json.Marshal(selected)
+	if err != nil {
+		return nil, fmt.Errorf("Could not parse %s: %w", file, err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(body, &document); err != nil {
+		return nil, fmt.Errorf("Could not parse %s: %w", file, err)
+	}
+	nyksobject.Walk(document, func(value string) any {
+		return nyksstring.ReplaceEnv(value, map[string]any{"env": environ})
+	})
+	body, err = json.Marshal(document)
+	if err != nil {
+		return nil, fmt.Errorf("Could not parse %s: %w", file, err)
+	}
 	var config Config
-	if err := document.Decode(&config); err != nil {
+	if err := json.Unmarshal(body, &config); err != nil {
 		return nil, fmt.Errorf("Could not parse %s: %w", file, err)
 	}
 	return &config, nil

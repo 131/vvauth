@@ -1040,3 +1040,23 @@ test('env.map rejects objects and arrays before and after macro expansion', asyn
   assert.equal(env.GIT_AUTHOR_EMAIL, '');
   assert.equal(env.GIT_COMMITTER_EMAIL, '');
 });
+
+
+test('gitlab decodes URL paths like Go while preserving scp paths', async t => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'vvauth-gitlab-url-'));
+  t.after(() => fs.rmSync(project, {recursive : true, force : true}));
+  assert.equal(spawnSync('git', ['init', '-q', project]).status, 0);
+  const rc = path.join(project, 'fixture.json');
+  fs.writeFileSync(rc, '{}');
+  const cli = path.resolve(__dirname, '..', 'cmd', 'vauth.js');
+  for(const [origin, expected] of [
+    ['ssh://git@git.example.test/Team/my%2Dapp.git', 'Team/my-app'],
+    ['https://git.example.test/Team/my%20app.git', 'Team/my app'],
+    ['git@git.example.test:Team/my%2Dapp.git', 'Team/my%2Dapp'],
+  ]) {
+    spawnSync('git', ['-C', project, 'remote', 'remove', 'origin']);
+    assert.equal(spawnSync('git', ['-C', project, 'remote', 'add', 'origin', origin]).status, 0);
+    const output = await exec(process.execPath, [cli, 'gitlab'], {cwd : project, env : {...process.env, VAUTHRC : rc}});
+    assert.ok(output.stdout.includes(`export CI_PROJECT_PATH='${expected}'`));
+  }
+});
