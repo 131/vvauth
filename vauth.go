@@ -95,6 +95,17 @@ func New() (*Vauth, error) {
 		return nil, err
 	}
 	v.Config = *config
+	if v.Config.Env != nil && v.Config.Env.GitLab {
+		var missing []string
+		for _, key := range []string{"CI_PROJECT_PATH", "CI_PROJECT_NAME", "CI_PROJECT_NAMESPACE", "CI_PROJECT_PATH_SLUG"} {
+			if v.Environ[key] == "" {
+				missing = append(missing, key)
+			}
+		}
+		if len(missing) != 0 {
+			return nil, fmt.Errorf("Missing %s. Run venv --gitlab first.", strings.Join(missing, ", "))
+		}
+	}
 	if v.VAULT_ADDR() == "" {
 		fmt.Fprintln(v.stderr(), "Not bound to any vault")
 	}
@@ -227,17 +238,6 @@ func (v *Vauth) Env(renew bool) (*OrderedMap, error) {
 	if config == nil {
 		config = &EnvConfig{}
 	}
-	if config.GitLab {
-		var missing []string
-		for _, key := range []string{"CI_PROJECT_PATH", "CI_PROJECT_NAME", "CI_PROJECT_NAMESPACE", "CI_PROJECT_PATH_SLUG"} {
-			if v.Environ[key] == "" {
-				missing = append(missing, key)
-			}
-		}
-		if len(missing) != 0 {
-			return nil, fmt.Errorf("Missing %s. Run venv --gitlab first.", strings.Join(missing, ", "))
-		}
-	}
 	profile := &Profile{Metadata: map[string]any{}, Database: map[string]any{}}
 	rc := v.RC()
 	localCredentials := v.Config.AgentCrypt != nil && rc["ssh_auth"] == nil && rc["jwt_auth"] == nil
@@ -331,12 +331,16 @@ func (v *Vauth) Login(source, renew bool) error {
 // PublishEnv writes `export K='v'` lines to stdout, each followed by an echo
 // of the redacted assignment to stderr for the sourcing shell.
 func (v *Vauth) PublishEnv(env *OrderedMap) {
+	publishEnv(v.stdout(), env)
+}
+
+func publishEnv(output io.Writer, env *OrderedMap) {
 	var lines []string
 	for _, key := range env.Keys {
 		lines = append(lines, fmt.Sprintf("export %s=%s", key, ShellEscape(env.Values[key])))
 		lines = append(lines, fmt.Sprintf(`echo export %s="[redacted]" >&2`, key))
 	}
-	fmt.Fprint(v.stdout(), strings.Join(lines, "\n")+"\n")
+	fmt.Fprint(output, strings.Join(lines, "\n")+"\n")
 }
 
 // ShellEscape single-quotes a value for bash.

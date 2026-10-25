@@ -857,7 +857,7 @@ func TestGitLabIsNotInferredDuringConstruction(t *testing.T) {
 		}
 	})
 	for _, ci := range []string{"", "1"} {
-		v := configuredClient(t, map[string]any{"env": map[string]any{"gitlab": true, "map": map[string]any{"PROJECT": "$${env.CI_PROJECT_PATH}"}}}, map[string]string{"CI": ci, "CI_PROJECT_PATH": "pipeline/project"})
+		v := configuredClient(t, map[string]any{"env": map[string]any{"gitlab": true, "map": map[string]any{"PROJECT": "$${env.CI_PROJECT_PATH}"}}}, map[string]string{"CI": ci, "CI_PROJECT_PATH": "pipeline/project", "CI_PROJECT_NAME": "project", "CI_PROJECT_NAMESPACE": "pipeline", "CI_PROJECT_PATH_SLUG": "pipeline-project"})
 		want := "pipeline/project"
 		value, _ := v.Config.Env.Map.Get("PROJECT")
 		equal(t, value, want)

@@ -119,14 +119,15 @@ func run(argv []string) error {
 		return nil
 	}
 
+	if command == "gitlab" {
+		return vvauth.Gitlab()
+	}
 	vvauth.Version = buildVersion()
 	v, err := vvauth.New()
 	if err != nil {
 		return err
 	}
 	switch command {
-	case "gitlab":
-		return v.Gitlab()
 	case "env":
 		source, renew := truthy(param(args, dict, 0, "source")), truthy(param(args, dict, 1, "renew"))
 		env, err := v.Env(renew)

@@ -69,7 +69,8 @@ await vauth.Set('KEY', 'value'); await vauth.Unset('KEY');
 Node extends the vauth-login client directly. `Connect`, `LookupSelf` and
 `Request` are inherited, not forwarded through compatibility wrappers.
 `GetProfile`, `Env`, `Show`, `Set`, `Unset`, `Login`, `Dotenv`, `Run`,
-`Gitlab` and `PublishEnv` own the environment/profile behavior. `Version()` is static.
+`PublishEnv` owns environment publication. `Gitlab()` is static in Node and a
+package function in Go, callable without constructing a client. `Version()` is static.
 `RC`, `VAULT_ADDR` and `VAULT_TOKEN` are the inherited read-only getters.
 `config` contains a mutable copy of only `env` and `ssh-agent-crypt`, with local
 `env` macros expanded; the full frozen RC retains original values/macros.
@@ -113,8 +114,8 @@ implementation or HTTP transport in vvauth.
 Node and Go consume vauth-login 1.1.5 and ssh-agent-crypt 1.4.2; Node uses nyks
 6.17.0. `Gitlab()` asynchronously reads `origin` and publishes only `CI_PROJECT_PATH`,
 `CI_PROJECT_NAME`, `CI_PROJECT_NAMESPACE` and `CI_PROJECT_PATH_SLUG` as shell exports.
-`env.gitlab: true` makes `Env()` refuse missing project variables before any Vault
-call, with a request to run `venv --gitlab` first. There is no Git inference at
+`env.gitlab: true` makes construction refuse missing project variables before
+any Vault call, with a request to run `venv --gitlab` first. There is no Git inference at
 construction, authentication in `Gitlab()`, or configuration-file update.
 
 The SDK keeps language-native conventions: promises/throws in Node,

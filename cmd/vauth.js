@@ -25,6 +25,10 @@ async function main(argv = process.argv.slice(2)) {
     throw new Error('Usage: vauth <env|login|connect|run|dotenv|show|set|unset|install|version|gitlab>');
   if(Object.hasOwn(dict, 'ir://run'))
     throw new Error('Unsupported flag --ir://run');
+  if(command === 'gitlab') {
+    await Vvauth.Gitlab();
+    return;
+  }
   const param = (index, name) => index < args.length ? args[index] : dict[name];
   const client = new Vvauth();
   let result;
@@ -41,7 +45,6 @@ async function main(argv = process.argv.slice(2)) {
       if(param(0, 'k') === undefined) throw new Error('Missing parameter --k');
       await client.Unset(param(0, 'k')); return;
     case 'install': await client.Install(); return;
-    case 'gitlab': await client.Gitlab(); return;
   }
   if(result !== undefined && result !== '') {
     if(Object.hasOwn(dict, 'ir://json') || typeof result !== 'string')

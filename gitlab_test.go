@@ -2,6 +2,7 @@ package vvauth
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,10 +17,18 @@ func TestGitlabPublishesOnlyProjectVariables(t *testing.T) {
 			t.Fatalf("git: %v %s", err, out)
 		}
 	}
-	v := configuredClient(t, map[string]any{"vault_addr": "https://vault.invalid", "env": map[string]any{"gitlab": true}}, nil)
-	var output bytes.Buffer
-	v.Stdout = &output
-	file := os.Getenv("VAUTHRC")
+	file := filepath.Join(t.TempDir(), "fixture.vauthrc")
+	if err := os.WriteFile(file, []byte(`{"env":{"gitlab":true}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VAUTHRC", file)
+	capture, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout := os.Stdout
+	os.Stdout = capture
+	defer func() { os.Stdout = stdout; capture.Close() }()
 	before, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatal(err)
@@ -36,7 +45,14 @@ func TestGitlabPublishesOnlyProjectVariables(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if err := v.Gitlab(); err != nil {
+	if err := Gitlab(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	output := new(bytes.Buffer)
+	if _, err := output.ReadFrom(capture); err != nil {
 		t.Fatal(err)
 	}
 	for key, value := range map[string]string{"CI_PROJECT_PATH": "Team/sub/App", "CI_PROJECT_NAME": "App", "CI_PROJECT_NAMESPACE": "Team/sub", "CI_PROJECT_PATH_SLUG": "team-sub-app"} {
@@ -59,22 +75,35 @@ func TestGitlabPublishesOnlyProjectVariables(t *testing.T) {
 	}
 }
 
-func TestGitlabGuardPrecedesAuthentication(t *testing.T) {
+func TestConstructorGitlabGuardPrecedesAuthentication(t *testing.T) {
 	f := newFixture(t, fixtureOptions{})
-	v := f.client()
-	v.Config.Env = &EnvConfig{GitLab: true}
-	v.Config.Env.Map.Set("KEEP", "literal")
+	file := filepath.Join(t.TempDir(), ".vauthrc")
+	document := map[string]any{"vault_addr": f.server.URL, "jwt_auth": map[string]any{"jwt": "test-jwt", "role": "test-role"}, "env": map[string]any{"gitlab": true, "map": map[string]any{"KEEP": "literal"}}}
+	body, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VAUTHRC", file)
+	t.Setenv("VAULT_TOKEN", "")
 	keys := []string{"CI_PROJECT_PATH", "CI_PROJECT_NAME", "CI_PROJECT_NAMESPACE", "CI_PROJECT_PATH_SLUG"}
 	for _, key := range keys {
-		delete(v.Environ, key)
+		t.Setenv(key, "")
 	}
-	if _, err := v.Env(false); err == nil || !strings.Contains(err.Error(), "Run venv --gitlab first") {
-		t.Fatal("missing vars did not fail before auth")
+	if _, err := New(); err == nil || !strings.Contains(err.Error(), "Run venv --gitlab first") {
+		t.Fatal("constructor accepted missing vars")
 	}
 	equal(t, len(f.requests), 0)
 	for _, key := range keys {
-		v.Environ[key] = "provided"
+		t.Setenv(key, "provided")
 	}
+	v, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.TokenCache = false
 	env, err := v.Env(false)
 	if err != nil {
 		t.Fatal(err)
@@ -82,6 +111,6 @@ func TestGitlabGuardPrecedesAuthentication(t *testing.T) {
 	value, _ := env.Get("KEEP")
 	equal(t, value, "literal")
 	if len(f.requests) == 0 {
-		t.Fatal("normal authentication skipped after initialization")
+		t.Fatal("normal auth not performed after initialization")
 	}
 }

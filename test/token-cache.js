@@ -947,7 +947,7 @@ test('env.gitlab no longer infers Git metadata in the constructor', async t => {
   const script = `const V = require(${JSON.stringify(path.resolve(__dirname, '..', 'index.js'))}); process.stdout.write(JSON.stringify(new V().config));`;
   for(const CI of ['', '1']) {
     const {stdout} = await exec(process.execPath, ['-e', script], {
-      cwd : project, env : {...process.env, HOME : home, VAUTHRC : file, VAULT_TOKEN : '', VAULT_ADDR : '', CI, CI_PROJECT_PATH : 'pipeline/project'},
+      cwd : project, env : {...process.env, HOME : home, VAUTHRC : file, VAULT_TOKEN : '', VAULT_ADDR : '', CI, CI_PROJECT_PATH : 'pipeline/project', CI_PROJECT_NAME : 'project', CI_PROJECT_NAMESPACE : 'pipeline', CI_PROJECT_PATH_SLUG : 'pipeline-project'},
     });
     assert.equal(JSON.parse(stdout).env.map.PROJECT, 'pipeline/project');
   }
@@ -984,16 +984,16 @@ test('gitlab publishes only CI exports without authentication or config writes',
   assert.equal(requests, 0);
 });
 
-test('Env with env.gitlab refuses missing CI variables before contacting Vault', async t => {
+test('constructor with env.gitlab rejects missing CI variables before authentication', async t => {
   const {client, requests} = await fixture(t);
   const keys = ['CI_PROJECT_PATH', 'CI_PROJECT_NAME', 'CI_PROJECT_NAMESPACE', 'CI_PROJECT_PATH_SLUG'];
   const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
   try {
     for(const key of keys) delete process.env[key];
-    const v = client({rc : {env : {gitlab : true, map : {KEEP : 'literal'}}}});
-    await assert.rejects(v.Env(), /Run venv --gitlab first/);
+    assert.throws(() => client({rc : {env : {gitlab : true, map : {KEEP : 'literal'}}}}), /Run venv --gitlab first/);
     assert.deepEqual(requests, []);
     for(const key of keys) process.env[key] = 'provided';
+    const v = client({rc : {env : {gitlab : true, map : {KEEP : 'literal'}}}});
     const env = await v.Env();
     assert.equal(env.KEEP, 'literal');
     assert.ok(requests.length > 0);

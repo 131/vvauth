@@ -42,6 +42,11 @@ class Vvauth extends VauthLogin {
     const rc = this.RC;
     const config = Object.fromEntries(['env', 'ssh-agent-crypt'].filter(key => rc && Object.hasOwn(rc, key)).map(key => [key, rc[key]]));
     this.config = walk(structuredClone(config), v => replaceEnv(v, {env : process.env}));
+    if(this.config.env && this.config.env.gitlab === true) {
+      const missing = ['CI_PROJECT_PATH', 'CI_PROJECT_NAME', 'CI_PROJECT_NAMESPACE', 'CI_PROJECT_PATH_SLUG'].filter(key => !process.env[key]);
+      if(missing.length)
+        throw new Error(`Missing ${missing.join(', ')}. Run venv --gitlab first.`);
+    }
 
 
     if(!this.VAULT_ADDR)
@@ -53,7 +58,7 @@ class Vvauth extends VauthLogin {
     return VERSION;
   }
 
-  async Gitlab() {
+  static async Gitlab() {
     const remote = String(await exec('git', ['remote', 'get-url', 'origin'], {stdio : ['ignore', 'pipe', 'ignore']})).trim();
     const match = remote.includes('://') ? null : remote.match(/^[^@]+@[^:]+:(.+)$/);
     const project = trim(match ? match[1] : new URL(remote).pathname, '/').replace(/\.git$/, '');
@@ -66,7 +71,7 @@ class Vvauth extends VauthLogin {
       CI_PROJECT_NAMESPACE : parts.join('/'),
       CI_PROJECT_PATH_SLUG : project.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
     };
-    this.PublishEnv(variables);
+    publishEnv(variables);
   }
 
   async Run(command, ...args) {
@@ -87,12 +92,7 @@ class Vvauth extends VauthLogin {
   }
 
   PublishEnv(env) {
-    let cmds = [];
-    for(let [k, v] of Object.entries(env)) {
-      cmds.push(`export ${k}=${shellEscape(v)}`);
-      cmds.push(`echo export ${k}="[redacted]" >&2`);
-    }
-    process.stdout.write(cmds.join("\n") + "\n");
+    publishEnv(env);
   }
 
 
@@ -135,11 +135,6 @@ class Vvauth extends VauthLogin {
   async Env(source = false, renew = false) {
     let env = {}, secrets = {}, profile = {};
     let {git, map = {}, paths, path : mount = "secrets"} = this.config.env || {};
-    if(this.config.env && this.config.env.gitlab === true) {
-      const missing = ['CI_PROJECT_PATH', 'CI_PROJECT_NAME', 'CI_PROJECT_NAMESPACE', 'CI_PROJECT_PATH_SLUG'].filter(key => !process.env[key]);
-      if(missing.length)
-        throw new Error(`Missing ${missing.join(', ')}. Run venv --gitlab first.`);
-    }
     const localCredentials = this.config['ssh-agent-crypt'] && !this.RC.ssh_auth && !this.RC.jwt_auth;
     if(localCredentials) {
       await this.Connect(renew);
@@ -245,6 +240,15 @@ const shellEscape = (arg) =>  {
   // see man bash
   return "'" + String(arg).replace(/'/g, '\'"\'"\'') + "'";
 };
+
+function publishEnv(env) {
+  let cmds = [];
+  for(let [k, v] of Object.entries(env)) {
+    cmds.push(`export ${k}=${shellEscape(v)}`);
+    cmds.push(`echo export ${k}="[redacted]" >&2`);
+  }
+  process.stdout.write(cmds.join("\n") + "\n");
+}
 
 module.exports = Vvauth;
 
