@@ -1,8 +1,5 @@
 # vvauth
 
-Node.js 16 or newer is supported; CI includes Node 16 JavaScript syntax and
-module/CLI loading checks alongside the existing test suites.
-
 Resolve a shell environment from your Vault identity, private settings and
 secrets. [vauth-login](https://github.com/131/vauth-login) handles authentication,
 token caching and HTTP; vvauth owns profiles, macro expansion, KV operations

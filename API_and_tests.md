@@ -56,10 +56,6 @@ armored with [ssh-agent-crypt](https://github.com/131/ssh-agent-crypt);
 
 ## Node module
 
-Node.js 16 or newer is supported. CI checks JavaScript syntax and CLI/module
-loading on Node 16 separately from the existing suite. JSON copies use
-`nyks/object/structuredClone`, native when available with a JSON fallback.
-
 ```js
 const Vauth = require('vvauth');
 const vauth = new Vauth();             // reads .vauthrc and process.env
