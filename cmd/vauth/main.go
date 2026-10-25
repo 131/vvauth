@@ -19,8 +19,6 @@ const usage = `Usage: vauth <command> [--flag[=value]] [--ir://json]
 Commands:
   env [--source] [--renew]    Resolve the .vauthrc environment (JSON with --ir://json)
   login [--source] [--renew]  Authenticate; --source exports VAULT_TOKEN
-  connect [--renew]           Authenticate and print the token
-  run <command> [args...]     Run a command with the resolved environment
   dotenv                      Print the environment as K=v lines
   show                        Print the identity profile and .vauth_database
   set <key> <value>           Store a key in the .vauth_database
@@ -98,10 +96,10 @@ func main() {
 }
 
 func run(argv []string) error {
-	if len(argv) > 0 && argv[0] == "run" {
-		return runCommand(argv[1:])
-	}
 	args, dict := parseArgs(argv)
+	if len(args) > 1 && args[0] == "env" && args[1] == "gitlab" {
+		args = []string{"gitlab"}
+	}
 	if truthy(dict["gitlab"], dict["gitlab"] != "") {
 		args = []string{"gitlab"}
 	}
@@ -120,7 +118,7 @@ func run(argv []string) error {
 	}
 
 	if command == "gitlab" {
-		return vvauth.Gitlab()
+		return (&vvauth.Vauth{}).Gitlab()
 	}
 	vvauth.Version = buildVersion()
 	v, err := vvauth.New()
@@ -179,26 +177,6 @@ func run(argv []string) error {
 		return v.Install()
 	}
 	return fmt.Errorf("Invalid command key '%s'", command)
-}
-
-func runCommand(argv []string) error {
-	if len(argv) > 0 && argv[0] == "--" {
-		argv = argv[1:]
-	}
-	if len(argv) == 0 {
-		return fmt.Errorf("run: missing command")
-	}
-	vvauth.Version = buildVersion()
-	v, err := vvauth.New()
-	if err != nil {
-		return err
-	}
-	code, err := v.Run(argv[0], argv[1:]...)
-	if err != nil {
-		return err
-	}
-	os.Exit(code)
-	return nil
 }
 
 // respond prints the command result: JSON with --ir://json, raw strings

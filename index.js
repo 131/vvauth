@@ -8,6 +8,7 @@ const {decrypt} = require('ssh-agent-crypt');
 const VauthLogin = require('vauth-login');
 const {spawn} = require('child_process');
 const exec = require('nyks/child_process/exec');
+const parseArgs = require('nyks/process/parseArgs');
 const readline = require('readline');
 
 const semver     = require('semver');
@@ -43,8 +44,9 @@ class Vvauth extends VauthLogin {
     const config = Object.fromEntries(['env', 'ssh-agent-crypt'].filter(key => rc && Object.hasOwn(rc, key)).map(key => [key, rc[key]]));
     this.config = walk(structuredClone(config), v => replaceEnv(v, {env : process.env}));
     if(this.config.env && this.config.env.gitlab === true) {
+      const {args, dict} = parseArgs();
       const missing = ['CI_PROJECT_PATH', 'CI_PROJECT_NAME', 'CI_PROJECT_NAMESPACE', 'CI_PROJECT_PATH_SLUG'].filter(key => !process.env[key]);
-      if(missing.length)
+      if(!(dict.gitlab || args[0] === 'gitlab') && missing.length)
         throw new Error(`Missing ${missing.join(', ')}. Run venv --gitlab first.`);
     }
 
@@ -54,11 +56,15 @@ class Vvauth extends VauthLogin {
 
   }
 
-  static Version() {
+  static Version() /**
+   * @alias version
+   */ {
     return VERSION;
   }
 
-  static async Gitlab() {
+  async Gitlab() /**
+   * @alias gitlab
+   */ {
     const remote = String(await exec('git', ['remote', 'get-url', 'origin'], {stdio : ['ignore', 'pipe', 'ignore']})).trim();
     const match = remote.includes('://') ? null : remote.match(/^[^@]+@[^:]+:(.+)$/);
     const project = trim(match ? match[1] : new URL(remote).pathname, '/').replace(/\.git$/, '');
@@ -71,19 +77,12 @@ class Vvauth extends VauthLogin {
       CI_PROJECT_NAMESPACE : parts.join('/'),
       CI_PROJECT_PATH_SLUG : project.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
     };
-    publishEnv(variables);
+    this.PublishEnv(variables);
   }
 
-  async Run(command, ...args) {
-    const env = await this.Env();
-    const child = spawn(command, args, {env : {...process.env, ...env}, stdio : 'inherit'});
-    return new Promise((resolve, reject) => {
-      child.once('error', reject);
-      child.once('close', resolve);
-    });
-  }
-
-  async Login(source = false, renew = false) {
+  async Login(source = false, renew = false) /**
+   * @alias login
+   */ {
     await this.Connect(renew);
     if(source) {
       let env = {VAULT_TOKEN : this.VAULT_TOKEN || ''};
@@ -92,11 +91,18 @@ class Vvauth extends VauthLogin {
   }
 
   PublishEnv(env) {
-    publishEnv(env);
+    let cmds = [];
+    for(let [k, v] of Object.entries(env)) {
+      cmds.push(`export ${k}=${shellEscape(v)}`);
+      cmds.push(`echo export ${k}="[redacted]" >&2`);
+    }
+    process.stdout.write(cmds.join("\n") + "\n");
   }
 
 
-  async Set(k, v) {
+  async Set(k, v) /**
+   * @alias set
+   */ {
     let {profile, database} = await this.GetProfile();
     if(!profile.VAUTH_USER_LOGIN)
       throw "Could not resolve VAUTH_USER_LOGIN from vault identity";
@@ -105,11 +111,15 @@ class Vvauth extends VauthLogin {
     await this._vault_write(`private/${profile.VAUTH_USER_LOGIN}`, '.vauth_database', database);
   }
 
-  async Unset(k) {
+  async Unset(k) /**
+   * @alias unset
+   */ {
     await this.Set(k, undefined);
   }
 
-  async Show() {
+  async Show() /**
+   * @alias show
+   */ {
     let {profile, database} = await this.GetProfile();
     return {...database, ...profile};
   }
@@ -132,7 +142,13 @@ class Vvauth extends VauthLogin {
     return {entity_id, identity, profile, database};
   }
 
-  async Env(source = false, renew = false) {
+  async Env(source = false, renew = false, gitlab = false) /**
+   * @alias env
+   */ {
+    if(gitlab) {
+      await this.Gitlab();
+      return;
+    }
     let env = {}, secrets = {}, profile = {};
     let {git, map = {}, paths, path : mount = "secrets"} = this.config.env || {};
     const localCredentials = this.config['ssh-agent-crypt'] && !this.RC.ssh_auth && !this.RC.jwt_auth;
@@ -177,7 +193,7 @@ class Vvauth extends VauthLogin {
       // the key reaches `export KEY=...` unescaped; .vauthrc may come from an untrusted working directory
       if(!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
         throw new Error(`Invalid environment variable name '${k}' in env.map`);
-      env[k] = replaceEnv(v, {env : process.env, profile, secrets});
+      env[k] = envValue(replaceEnv(envValue(v, k), {env : process.env, profile, secrets}), k);
     }
 
     if(source) {
@@ -187,7 +203,9 @@ class Vvauth extends VauthLogin {
     return env;
   }
 
-  async Dotenv() {
+  async Dotenv() /**
+   * @alias dotenv
+   */ {
     const env = await this.Env();
 
     for(let [k, v] of Object.entries(env)) {
@@ -216,7 +234,9 @@ class Vvauth extends VauthLogin {
     return new Promise(resolve => child.on('exit', resolve));
   }
 
-  async Install() {
+  async Install() /**
+   * @alias install
+   */ {
     const bashrc_path = path.resolve(os.homedir(), ".bashrc");
     let bashrc = fs.existsSync(bashrc_path) ? fs.readFileSync(bashrc_path, 'utf-8').trim() : '';
     if(await this._function_exists(FUNCTION_NAME) === 0) {
@@ -236,21 +256,17 @@ class Vvauth extends VauthLogin {
 
 }
 
+const envValue = (value, key) => {
+  if(value == null)
+    return '';
+  if(!['string', 'number', 'boolean'].includes(typeof value) || (typeof value === 'number' && !Number.isFinite(value)))
+    throw new Error(`Invalid environment value '${key}' in env.map: expected a scalar`);
+  return String(value);
+};
+
 const shellEscape = (arg) =>  {
   // see man bash
   return "'" + String(arg).replace(/'/g, '\'"\'"\'') + "'";
 };
 
-function publishEnv(env) {
-  let cmds = [];
-  for(let [k, v] of Object.entries(env)) {
-    cmds.push(`export ${k}=${shellEscape(v)}`);
-    cmds.push(`echo export ${k}="[redacted]" >&2`);
-  }
-  process.stdout.write(cmds.join("\n") + "\n");
-}
-
 module.exports = Vvauth;
-
-if(require.main === module)
-  require('./cmd/vauth')();

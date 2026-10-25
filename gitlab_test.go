@@ -45,7 +45,7 @@ func TestGitlabPublishesOnlyProjectVariables(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if err := Gitlab(); err != nil {
+	if err := (&Vauth{}).Gitlab(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := capture.Seek(0, 0); err != nil {

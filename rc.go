@@ -66,14 +66,19 @@ func (m *OrderedMap) UnmarshalYAML(node *yaml.Node) error {
 		return fmt.Errorf("line %d: expected a mapping", node.Line)
 	}
 	for i := 0; i+1 < len(node.Content); i += 2 {
-		var key, value string
+		var key string
+		var value any
 		if err := node.Content[i].Decode(&key); err != nil {
 			return err
 		}
 		if err := node.Content[i+1].Decode(&value); err != nil {
 			return err
 		}
-		m.Set(key, value)
+		text, err := envValue(value)
+		if err != nil {
+			return fmt.Errorf("Invalid environment value '%s' in env.map: %w", key, err)
+		}
+		m.Set(key, text)
 	}
 	return nil
 }
@@ -97,33 +102,33 @@ func (m OrderedMap) MarshalJSON() ([]byte, error) {
 // Lookup resolves dotted paths ($${env.X}) in nested string maps.
 type Lookup map[string]any
 
-func (dict Lookup) get(path string) (string, bool) {
+func (dict Lookup) get(path string) (any, bool) {
 	var current any = map[string]any(dict)
 	for _, part := range strings.Split(path, ".") {
 		switch node := current.(type) {
 		case map[string]any:
 			value, ok := node[part]
 			if !ok {
-				return "", false
+				return nil, false
 			}
 			current = value
 		case map[string]string:
 			value, ok := node[part]
 			if !ok {
-				return "", false
+				return nil, false
 			}
 			current = value
 		case Lookup:
 			value, ok := node[part]
 			if !ok {
-				return "", false
+				return nil, false
 			}
 			current = value
 		default:
-			return "", false
+			return nil, false
 		}
 	}
-	return stringify(current)
+	return current, true
 }
 
 func stringify(value any) (string, bool) {
@@ -146,11 +151,49 @@ func stringify(value any) (string, bool) {
 	return string(body), true
 }
 
+// envValue accepts only JSON scalars, rendering numbers like JavaScript String.
+func envValue(value any) (string, error) {
+	switch value := value.(type) {
+	case nil:
+		return "", nil
+	case string:
+		return value, nil
+	case bool:
+		return strconv.FormatBool(value), nil
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, json.Number:
+		body, err := json.Marshal(value)
+		var number float64
+		if err == nil {
+			err = json.Unmarshal(body, &number)
+		}
+		if err == nil {
+			if number == 0 {
+				return "0", nil
+			}
+			body, err = json.Marshal(number)
+			if err == nil {
+				return string(body), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("expected a scalar")
+}
+
 var macroPattern = regexp.MustCompile(`(?i)\$\$([a-z0-9._-]+)|\$\$\{([^}]+)\}`)
 
 // ReplaceEnv expands $$key and $${key} macros against dict (nyks
 // string/replaceEnv semantics): unknown keys stay, expansions recurse.
 func ReplaceEnv(str string, dict Lookup) string {
+	return replaceEnv(str, func(key string) (string, bool) {
+		value, ok := dict.get(key)
+		if !ok {
+			return "", false
+		}
+		return stringify(value)
+	})
+}
+
+func replaceEnv(str string, lookup func(string) (string, bool)) string {
 	for depth := 0; depth < 16; depth++ {
 		touched := false
 		str = macroPattern.ReplaceAllStringFunc(str, func(macro string) string {
@@ -159,7 +202,7 @@ func ReplaceEnv(str string, dict Lookup) string {
 			if key == "" {
 				key = match[2]
 			}
-			value, ok := dict.get(key)
+			value, ok := lookup(key)
 			if !ok {
 				return macro
 			}

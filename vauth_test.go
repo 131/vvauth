@@ -863,3 +863,56 @@ func TestGitLabIsNotInferredDuringConstruction(t *testing.T) {
 		equal(t, value, want)
 	}
 }
+
+func TestEnvMapScalarStringsPreserveRawRC(t *testing.T) {
+	values := map[string]any{"TEXT": "hello", "BOOL": true, "NUMBER": 42, "NULL": nil, "LARGE": 1e20, "SMALL": 1e-7, "ZERO": 0}
+	v := configuredClient(t, map[string]any{"env": map[string]any{"map": values}}, nil)
+	env, err := v.Env(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range map[string]string{"TEXT": "hello", "BOOL": "true", "NUMBER": "42", "NULL": "", "LARGE": "100000000000000000000", "SMALL": "1e-7", "ZERO": "0"} {
+		actual, ok := env.Get(key)
+		if !ok || actual != value {
+			t.Fatalf("%s: %q != %q", key, actual, value)
+		}
+	}
+	raw := v.RC()["env"].(map[string]any)["map"].(map[string]any)
+	equal(t, raw["BOOL"], true)
+	equal(t, raw["NUMBER"].(float64), float64(42))
+	if raw["NULL"] != nil {
+		t.Fatal("raw RC null changed")
+	}
+}
+
+func TestEnvMapRejectsObjectValuesAndMacros(t *testing.T) {
+	for _, value := range []any{map[string]any{"x": 1}, []any{"x"}, []any{"$${profile.SCALAR}"}} {
+		_, err := configFromRC(map[string]any{"env": map[string]any{"map": map[string]any{"VALUE": value}}}, nil)
+		if err == nil || !strings.Contains(err.Error(), "Invalid environment value 'VALUE' in env.map: expected a scalar") {
+			t.Fatalf("object accepted: %v", err)
+		}
+	}
+	f := newFixture(t, fixtureOptions{metadata: map[string]any{"SCALAR": 42, "BOOL": false, "NULL": nil, "OBJECT": map[string]any{"x": 1}, "ARRAY": []any{"x"}}})
+	v := f.client()
+	for _, value := range []string{"$${profile.OBJECT}", "$${profile.ARRAY}", "$${profile}"} {
+		v.Config.Env = &EnvConfig{}
+		v.Config.Env.Map.Set("VALUE", value)
+		if _, err := v.Env(false); err == nil || !strings.Contains(err.Error(), "Invalid environment value 'VALUE' in env.map: expected a scalar") {
+			t.Fatalf("object macro accepted: %v", err)
+		}
+	}
+	v.Config.Env = &EnvConfig{Git: true}
+	for key, macro := range map[string]string{"NUMBER": "$${profile.SCALAR}", "BOOL": "$${profile.BOOL}", "NULL": "$${profile.NULL}"} {
+		v.Config.Env.Map.Set(key, macro)
+	}
+	env, err := v.Env(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range map[string]string{"NUMBER": "42", "BOOL": "false", "NULL": "", "GIT_AUTHOR_EMAIL": "", "GIT_COMMITTER_EMAIL": ""} {
+		actual, ok := env.Get(key)
+		if !ok || actual != value {
+			t.Fatalf("%s: %q != %q", key, actual, value)
+		}
+	}
+}

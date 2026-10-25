@@ -3,7 +3,6 @@ package vvauth
 import (
 	"fmt"
 	"net/url"
-	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -12,7 +11,7 @@ import (
 var scpRemote = regexp.MustCompile(`^[^@]+@[^:]+:(.+)$`)
 var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
 
-func Gitlab() error {
+func (v *Vauth) Gitlab() error {
 	out, err := exec.Command("git", "remote", "get-url", "origin").Output()
 	if err != nil {
 		return err
@@ -43,6 +42,6 @@ func Gitlab() error {
 	for _, key := range []string{"CI_PROJECT_PATH", "CI_PROJECT_NAME", "CI_PROJECT_NAMESPACE", "CI_PROJECT_PATH_SLUG"} {
 		env.Set(key, variables[key])
 	}
-	publishEnv(os.Stdout, env)
+	v.PublishEnv(env)
 	return nil
 }

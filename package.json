@@ -13,11 +13,12 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "cnyks": "^3.2.4",
     "mout": "^1.2.4",
     "nyks": "^6.17.0",
     "semver": "^7.5.4",
-    "ssh-agent-crypt": "^1.4.2",
-    "vauth-login": "^1.1.5"
+    "ssh-agent-crypt": "^1.4.3",
+    "vauth-login": "^1.1.6"
   },
   "devDependencies": {
     "eslint": "^8.57.0",

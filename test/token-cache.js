@@ -345,7 +345,7 @@ for(const flag of ['renew']) {
         cwd : home,
         env : {...process.env, HOME : home, VAUTHRC : rc, VAULT_TOKEN : 'environment-token', SSH_AUTH_SOCK : process.env.SSH_AUTH_SOCK},
       };
-      const cli = path.resolve(__dirname, '..', 'index.js');
+      const cli = path.resolve(__dirname, '..', 'cmd', 'vauth.js');
       const output = await exec(process.execPath, [cli, command, '--source', `--${flag}`], options);
       assert.ok(output.stdout.includes("export VAULT_TOKEN='fresh-token'"));
       assert.ok(!output.stdout.includes('Vauth token: '));
@@ -386,7 +386,7 @@ test('installed venv forwards --renew through the real CLI', async t => {
   assert.ok(declaration.includes('vauth env --source "$@"'));
   const bin = path.join(home, 'bin');
   fs.mkdirSync(bin);
-  fs.symlinkSync(path.resolve(__dirname, '..', 'index.js'), path.join(bin, 'vauth'));
+  fs.symlinkSync(path.resolve(__dirname, '..', 'cmd', 'vauth.js'), path.join(bin, 'vauth'));
   const rc = path.join(home, '.vauthrc');
   fs.writeFileSync(rc, JSON.stringify({vault_addr : instance.VAULT_ADDR, ...instance.RC}));
   const options = {
@@ -621,7 +621,7 @@ test('real CLI reads token_cache false from .vauthrc', async t => {
   const home = path.dirname(path.dirname(path.dirname(file)));
   const rc = path.join(home, '.vauthrc');
   fs.writeFileSync(rc, JSON.stringify({vault_addr : instance.VAULT_ADDR, ...instance.RC, token_cache : false}));
-  const cli = path.resolve(__dirname, '..', 'index.js');
+  const cli = path.resolve(__dirname, '..', 'cmd', 'vauth.js');
   for(let i = 0; i < 2; i++) {
     const output = await exec(process.execPath, [cli, 'login', '--source'], {
       cwd : home,
@@ -845,21 +845,21 @@ test('a project package.json may pin vvauth; other dependencies are ignored', as
   const {version} = require('../package.json');
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'vvauth-project-'));
   t.after(() => fs.rmSync(cwd, {recursive : true, force : true}));
-  const cli = path.resolve(__dirname, '..', 'index.js');
+  const cli = path.resolve(__dirname, '..', 'cmd', 'vauth.js');
   const options = {cwd, env : {...process.env, HOME : cwd, VAUTHRC : path.join(cwd, 'none'), VAULT_ADDR : '', VAULT_TOKEN : '', SSH_AUTH_SOCK : ''}};
 
   fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({dependencies : {vvauth : `^${version}`, 'not-installed-anywhere' : '^9'}}));
-  assert.equal((await exec(process.execPath, [cli, 'version'], options)).stdout.trim(), version);
+  assert.equal(JSON.parse((await exec(process.execPath, [cli, 'version', '--ir://json'], options)).stdout), version);
 
   fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({dependencies : {vvauth : '<0.0.1'}}));
-  await assert.rejects(exec(process.execPath, [cli, 'connect'], options), /Unsupported vvauth version .* \(project requires <0.0.1\)/);
+  await assert.rejects(exec(process.execPath, [cli, 'vauth:Connect', '--ir://json'], options), /Unsupported vvauth version .* \(project requires <0.0.1\)/);
 });
 
 
 test('profile, KV and environment use the inherited vauth-login transport', async t => {
   const Login = require('vauth-login');
   assert.equal(Object.getPrototypeOf(Vauth.prototype), Login.prototype);
-  for(const name of ['Connect', 'LookupSelf', 'Request']) {
+  for(const name of ['LookupSelf', 'Request']) {
     assert.equal(Object.hasOwn(Vauth.prototype, name), false);
     assert.equal(Vauth.prototype[name], Login.prototype[name]);
   }
@@ -891,8 +891,8 @@ test('an unknown project Vault cannot receive inherited credentials through env 
   fs.mkdirSync(project);
   fs.writeFileSync(path.join(project, '.vauthrc'), JSON.stringify({vault_addr : f.client().VAULT_ADDR, env : {map : {LOGIN : '$${profile.VAUTH_USER_LOGIN}'}}}));
   const options = {cwd : project, env : {...process.env, HOME : home, VAUTHRC : '', VAULT_ADDR : '', VAULT_TOKEN : 'inherited-token'}};
-  const cli = path.resolve(__dirname, '..', 'index.js');
-  assert.equal((await exec(process.execPath, [cli, 'connect'], options)).stdout, 'inherited-token');
+  const cli = path.resolve(__dirname, '..', 'cmd', 'vauth.js');
+  assert.equal(JSON.parse((await exec(process.execPath, [cli, 'vauth:Connect', '--ir://json'], options)).stdout), 'inherited-token');
   for(const command of ['env', 'show']) {
     await assert.rejects(exec(process.execPath, [cli, command, '--ir://json'], options), err => {
       assert.equal(err.stdout, '');
@@ -901,8 +901,17 @@ test('an unknown project Vault cannot receive inherited credentials through env 
       return true;
     });
   }
-  for(const command of ['Request', 'LookupSelf', 'request', 'lookupSelf'])
-    await assert.rejects(exec(process.execPath, [cli, command], options), /Usage:/);
+  for(const args of [
+    ['Request', '--method=GET', '--apiPath=identity/entity/id/test', '--token=inherited-token', '--ir://json'],
+    ['LookupSelf', '--token=inherited-token', '--ir://json'],
+  ]) {
+    await assert.rejects(exec(process.execPath, [cli, ...args], options), err => {
+      assert.equal(err.stdout, '');
+      assert.match(err.stderr, /Unknown vault/);
+      assert.ok(!err.stderr.includes('inherited-token'));
+      return true;
+    });
+  }
   assert.deepEqual(f.requests, []);
 });
 
@@ -970,13 +979,14 @@ test('gitlab publishes only CI exports without authentication or config writes',
   fs.writeFileSync(file, body);
   const env = {...process.env, HOME : home, VAUTHRC : file, VAULT_TOKEN : '', VAULT_ADDR : '', SSH_AUTH_SOCK : ''};
   const expected = {CI_PROJECT_PATH : 'Team/sub/App', CI_PROJECT_NAME : 'App', CI_PROJECT_NAMESPACE : 'Team/sub', CI_PROJECT_PATH_SLUG : 'team-sub-app'};
-  for(const cli of [path.resolve(__dirname, '..', 'index.js'), path.resolve(__dirname, '..', 'cmd/vauth.js')]) {
-    for(const args of [['gitlab'], ['--gitlab'], ['env', '--source', '--gitlab']]) {
+  for(const cli of [path.resolve(__dirname, '..', 'cmd', 'vauth.js')]) {
+    for(const args of [['gitlab'], ['env', '--source', '--gitlab']]) {
       const output = await exec(process.execPath, [cli, ...args], {cwd : project, env});
       const names = [...output.stdout.matchAll(/^export ([A-Z_]+)=/gm)].map(match => match[1]);
       assert.deepEqual(names, Object.keys(expected));
       for(const [key, value] of Object.entries(expected)) assert.ok(output.stdout.includes(`export ${key}='${value}'`));
-      assert.equal(output.stderr, '');
+      if(args[0] === 'gitlab') assert.match(output.stderr, /commands list/);
+      else assert.equal(output.stderr, '');
       assert.equal(fs.readFileSync(file, 'utf8'), body);
       assert.equal(fs.existsSync(path.join(project, '.vauthrc')), false);
     }
@@ -1003,4 +1013,30 @@ test('constructor with env.gitlab rejects missing CI variables before authentica
       else process.env[key] = value;
     }
   }
+});
+
+test('env.map scalar strings leave the raw RC types untouched', async t => {
+  const map = {TEXT : 'hello', BOOL : true, NUMBER : 42, NULL : null, LARGE : 1e20, SMALL : 1e-7, ZERO : -0};
+  const v = configuredClient(t, {env : {map}});
+  assert.deepEqual(await v.Env(), {TEXT : 'hello', BOOL : 'true', NUMBER : '42', NULL : '', LARGE : '100000000000000000000', SMALL : '1e-7', ZERO : '0'});
+  assert.equal(v.RC.env.map.BOOL, true);
+  assert.equal(v.RC.env.map.NUMBER, 42);
+  assert.equal(v.RC.env.map.NULL, null);
+  assert.ok(Object.isFrozen(v.RC.env.map));
+});
+
+test('env.map rejects objects and arrays before and after macro expansion', async t => {
+  const f = await fixture(t, {metadata : {SCALAR : 42, BOOL : false, NULL : null, OBJECT : {x : 1}, ARRAY : ['x']}});
+  const v = f.client();
+  for(const value of [{x : 1}, ['x'], ['$${profile.SCALAR}'], '$${profile.OBJECT}', '$${profile.ARRAY}', '$${profile}']) {
+    v.config = {env : {map : {VALUE : value}}};
+    await assert.rejects(v.Env(), /Invalid environment value 'VALUE' in env.map: expected a scalar/);
+  }
+  v.config = {env : {map : {NUMBER : '$${profile.SCALAR}', BOOL : '$${profile.BOOL}', NULL : '$${profile.NULL}'}, git : true}};
+  const env = await v.Env();
+  assert.equal(env.NUMBER, '42');
+  assert.equal(env.BOOL, 'false');
+  assert.equal(env.NULL, '');
+  assert.equal(env.GIT_AUTHOR_EMAIL, '');
+  assert.equal(env.GIT_COMMITTER_EMAIL, '');
 });

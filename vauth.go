@@ -281,11 +281,19 @@ func (v *Vauth) Env(renew bool) (*OrderedMap, error) {
 	}
 	merged := profile.Merged()
 	if config.Git {
-		mapping.Set("GIT_COMMITTER_NAME", "$${profile.VAUTH_USER_NAME}")
-		mapping.Set("GIT_COMMITTER_EMAIL", "$${profile.VAUTH_USER_MAIL}")
-		mapping.Set("GIT_AUTHOR_EMAIL", "$${profile.VAUTH_USER_MAIL}")
-		mapping.Set("GIT_AUTHOR_NAME", "$${profile.VAUTH_USER_NAME}")
-		mapping.Set("GIT_USER_LOGIN", "$${profile.VAUTH_USER_LOGIN}")
+		for _, field := range [][2]string{
+			{"GIT_COMMITTER_NAME", "VAUTH_USER_NAME"},
+			{"GIT_COMMITTER_EMAIL", "VAUTH_USER_MAIL"},
+			{"GIT_AUTHOR_EMAIL", "VAUTH_USER_MAIL"},
+			{"GIT_AUTHOR_NAME", "VAUTH_USER_NAME"},
+			{"GIT_USER_LOGIN", "VAUTH_USER_LOGIN"},
+		} {
+			value, err := envValue(merged[field[1]])
+			if err != nil {
+				return nil, fmt.Errorf("Invalid environment value '%s' in env.map: %w", field[0], err)
+			}
+			mapping.Set(field[0], value)
+		}
 	}
 	mount := config.Path
 	if mount == "" {
@@ -306,7 +314,22 @@ func (v *Vauth) Env(renew bool) (*OrderedMap, error) {
 		if !envName.MatchString(key) {
 			return nil, fmt.Errorf("Invalid environment variable name '%s' in env.map", key)
 		}
-		env.Set(key, ReplaceEnv(mapping.Values[key], dict))
+		var expansionErr error
+		value := replaceEnv(mapping.Values[key], func(path string) (string, bool) {
+			raw, ok := dict.get(path)
+			if !ok {
+				return "", false
+			}
+			text, err := envValue(raw)
+			if err != nil {
+				expansionErr = fmt.Errorf("Invalid environment value '%s' in env.map: %w", key, err)
+			}
+			return text, err == nil
+		})
+		if expansionErr != nil {
+			return nil, expansionErr
+		}
+		env.Set(key, value)
 	}
 	return env, nil
 }
@@ -331,16 +354,12 @@ func (v *Vauth) Login(source, renew bool) error {
 // PublishEnv writes `export K='v'` lines to stdout, each followed by an echo
 // of the redacted assignment to stderr for the sourcing shell.
 func (v *Vauth) PublishEnv(env *OrderedMap) {
-	publishEnv(v.stdout(), env)
-}
-
-func publishEnv(output io.Writer, env *OrderedMap) {
 	var lines []string
 	for _, key := range env.Keys {
 		lines = append(lines, fmt.Sprintf("export %s=%s", key, ShellEscape(env.Values[key])))
 		lines = append(lines, fmt.Sprintf(`echo export %s="[redacted]" >&2`, key))
 	}
-	fmt.Fprint(output, strings.Join(lines, "\n")+"\n")
+	fmt.Fprint(v.stdout(), strings.Join(lines, "\n")+"\n")
 }
 
 // ShellEscape single-quotes a value for bash.
@@ -359,30 +378,6 @@ func (v *Vauth) Dotenv() error {
 		fmt.Fprintf(v.stderr(), "export %s=[redacted]\n", key)
 	}
 	return nil
-}
-
-// Run executes a command with the resolved environment merged over the
-// process environment and returns its exit code.
-func (v *Vauth) Run(command string, args ...string) (int, error) {
-	env, err := v.Env(false)
-	if err != nil {
-		return 1, err
-	}
-	cmd := exec.Command(command, args...)
-	cmd.Env = os.Environ()
-	for _, key := range env.Keys {
-		cmd.Env = append(cmd.Env, key+"="+env.Values[key])
-	}
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	err = cmd.Run()
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		return exit.ExitCode(), nil
-	}
-	if err != nil {
-		return 1, fmt.Errorf("run failure : %w", err)
-	}
-	return 0, nil
 }
 
 // FunctionExists reports whether a bash login shell already defines alias.

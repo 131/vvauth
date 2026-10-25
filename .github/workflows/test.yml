@@ -50,4 +50,4 @@ jobs:
       - run: |
           node --check index.js
           node --check cmd/vauth.js
-          node index.js version
+          node cmd/vauth.js version

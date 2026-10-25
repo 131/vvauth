@@ -1,142 +1,119 @@
-# vvauth: CLI contract, API and tests
+# API, CLI and verification
 
-Back to the [README](README.md). Node (`npm install -g vvauth`) and Go
-(`go install github.com/131/vvauth/v2/cmd/vauth@latest`, release binaries)
-expose the same `vauth` command; everything below holds for both.
+Node and Go implement the same authentication/profile/environment behavior.
+Constructors, errors and return types stay native to each language. Their CLI
+contracts differ except for the shared calls below.
 
-## CLI contract
-
-```
-vauth <command> [positional...] [--flag[=value]] [--ir://json]
-```
-
-`env.map` names must match `^[A-Za-z_][A-Za-z0-9_]*$`; any other key is an
-error, since names reach `export KEY=` unescaped. Flags may replace positionals (`vauth set GITLAB_TOKEN x` ≡
-`vauth set --k=GITLAB_TOKEN --v=x`). `--flag` alone means `true`; `--flag=`,
-`--flag=false` and `--flag=0` mean `false`. `--` ends flag parsing.
-
-| Command | Effect | stdout |
-| --- | --- | --- |
-| `env [--source] [--renew]` | Resolve the `.vauthrc` environment (`env.map`, `env.paths`, `env.git`, `ssh-agent-crypt`) | JSON object with `--ir://json`; `export K='v'` lines with `--source`; JSON otherwise |
-| `login [--source] [--renew]` | Authenticate, cache the token | `export VAULT_TOKEN='…'` with `--source`; nothing otherwise |
-| `connect [--renew]` | Authenticate, print the token | raw token, no trailing newline (`--ir://json`: JSON string) |
-| `run <command> [args...]` | Run a command with the resolved environment merged over the current one | the command's; exit code propagated |
-| `dotenv` | Resolved environment as `K=v` lines | one `K=v` per line |
-| `show` | Identity metadata merged over `.vauth_database` | JSON object |
-| `set <key> <value>` | Store `KEY` (upper-cased) in `private/<login>/.vauth_database` | nothing |
-| `unset <key>` | Remove a key from `.vauth_database` | nothing |
-| `gitlab` (`--gitlab`, `venv --gitlab`) | Read `origin`; no authentication or configuration write | Only `CI_PROJECT_*` exports |
-| `install` | Append the `venv` shell function to `~/.bashrc` | nothing |
-| `version` (`--version`) | Build version | one line |
-
-Diagnostics (`Vauth token: generated · 12h`, `export K=[redacted]`,
-errors) go to stderr; stdout is machine-readable for every command. Exit code is
-`0` on success, `1` on error (or the child's code for `run`). `--renew` discards
-the cached token and authenticates again.
+## Shared calls
 
 ```bash
-vauth env --ir://json            # {"VAULT_TOKEN":"…","VAULT_ADDR":"…","TF_HTTP_USERNAME":"…"}
-source <(vauth env --source)     # what the `venv` function does
-vauth run -- terraform plan
+vauth env --ir://json
+venv
+venv --renew
+venv --gitlab
 ```
 
-## Environment
+`env --ir://json` writes one JSON object to stdout, with diagnostics on stderr.
+JSON key order and final whitespace are not significant. `venv` sources
+`vauth env --source "$@"`; renewal forces authentication. GitLab initialization
+publishes only four `CI_PROJECT_*` exports, without login, cache or file writes.
 
-| Variable | Role |
-| --- | --- |
-| `VAUTHRC` | Explicit `.vauthrc` path; else `./.vauthrc`, then `~/.vauthrc` |
-| `VAULT_ADDR` | Fallback when `.vauthrc` has no `vault_addr` |
-| `VAULT_TOKEN` | Returned offline by Connect without renewal/persistence; LookupSelf validates online when the profile is requested |
-| `SSH_AUTH_SOCK` | Agent for `ssh_auth` and for the token cache; on Windows, else Pageant (≥ 0.75), else the OpenSSH pipe |
-| `VAUTH_USER_IDENTITY`, `VAUTH_USER_MAIL` | Agent key selector for the token cache (first key otherwise) |
+## Node CLI — cnyks
 
-Tokens are cached in `~/.vauth/tokens/<sha256(vault_addr, ssh_auth, jwt_auth)>.creds`,
-armored with [ssh-agent-crypt](https://github.com/131/ssh-agent-crypt);
-`token_cache: false` disables the cache. Without an agent, nothing is written.
+```text
+vauth <command> [--parameter=value] [--ir://json | --ir://raw]
+```
 
-## Node module
+The first positional selects the command; remaining method arguments are named
+flags, not positional remapping. Aliases expose `env`, `login`, `show`, `set`,
+`unset`, `dotenv`, `install`, `version` and `gitlab`. `Connect` remains a hidden
+SDK operation; cnyks retains its namespaced `vauth:Connect` entry, not a
+short `Connect`/`connect` alias. cnyks also reflects other public
+methods; its interactive rendering is not the Go CLI contract.
+
+| Command | Parameters | Effect |
+| --- | --- | --- |
+| `env` | `--source`, `--renew`, `--gitlab` | Resolve environment, export it, or initialize GitLab variables |
+| `login` | `--source`, `--renew` | Authentication only; optionally export only VAULT_TOKEN |
+| `show` | — | Merged profile/private database |
+| `set` | `--k=KEY --v=VALUE` | Store an upper-cased private key |
+| `unset` | `--k=KEY` | Remove a private key |
+| `dotenv` | — | Resolved K=v output |
+| `install` | — | Install the venv shell function |
+| `version` | — | Package version |
+| `gitlab` | — | Only CI_PROJECT_* exports |
+
+The executable is `cmd/vauth.js`; `index.js` only exports the SDK. Use
+`--ir://json` for machine-readable return values. `env` selects raw cnyks output
+when JSON was not requested, so sourcing does not show the runner menu.
+
+## Go CLI — native
+
+```text
+vauth <command> [positionals...] [--flag=value] [--ir://json]
+```
+
+Commands are `env`, `login`, `show`, `set`, `unset`, `dotenv`, `install`, `version`
+and `gitlab`. `set KEY VALUE` / `unset KEY` also accept `--k` / `--v`. Boolean
+flags accept true, false, 0 and empty forms. `env` supports source, renew and
+gitlab flags; `login` supports source and renew. Hidden `connect` remains
+available for token-only callers. No command runner is part of this API.
+
+Objects are JSON, strings are raw without JSON mode, and version is one line.
+Exit is zero on success and one on failure; errors go to stderr.
+
+## SDK
 
 ```js
 const Vauth = require('vvauth');
-const vauth = new Vauth();             // reads .vauthrc and process.env
-const token = await vauth.Connect();   // Connect(renew = false)
-const env   = await vauth.Env();       // Env(source = false, renew = false) → object
-await vauth.Login(false, true);        // login(source, renew)
-const profile = await vauth.Show();    // {...database, ...metadata}
-await vauth.Set('KEY', 'value'); await vauth.Unset('KEY');
+const client = new Vauth();
+const token = await client.Connect(renew);
+const env = await client.Env(source, renew, gitlab);
+await client.Login(source, renew);
+const profile = await client.Show();
+await client.Set(key, value);
+await client.Unset(key);
+await client.Gitlab();
 ```
-
-Node extends the vauth-login client directly. `Connect`, `LookupSelf` and
-`Request` are inherited, not forwarded through compatibility wrappers.
-`GetProfile`, `Env`, `Show`, `Set`, `Unset`, `Login`, `Dotenv`, `Run`,
-`PublishEnv` owns environment publication. `Gitlab()` is static in Node and a
-package function in Go, callable without constructing a client. `Version()` is static.
-`RC`, `VAULT_ADDR` and `VAULT_TOKEN` are the inherited read-only getters.
-`config` contains a mutable copy of only `env` and `ssh-agent-crypt`, with local
-`env` macros expanded; the full frozen RC retains original values/macros.
-vvauth does not reopen the selected configuration file.
-
-`Env(true)`, `Login(true)`, `Dotenv()` and `PublishEnv()` write to stdout but do
-not exit the SDK caller. `Run(command, ...args)` returns the child's exit code;
-launch/authentication errors reject. Public methods use PascalCase without old
-SDK aliases. The CLI independently keeps its lowercase commands and flags,
-without reflecting inherited HTTP methods into CLI commands.
-
-## Go module
 
 ```go
-import vvauth "github.com/131/vvauth/v2"
-
-v, err := vvauth.New()                 // .vauthrc + os.Environ()
-token, err := v.Connect(false)         // renew bool
-env, err := v.Env(false)               // *OrderedMap, deterministic output order
-profile, err := v.GetProfile(false)    // EntityID, Metadata, Database; Merged()
-err = v.Login(source, renew)
-err = v.Set("KEY", "value"); err = v.Unset("KEY")
-code, err := v.Run("terraform", "plan")
-v.PublishEnv(env)                      // export lines on stdout, redacted echo on stderr
+client, err := vvauth.New()
+token, err := client.Connect(renew)
+env, err := client.Env(renew)
+err = client.Login(source, renew)
+profile, err := client.Show()
+err = client.Set(key, value)
+err = client.Unset(key)
+err = client.Gitlab()
 ```
 
-`Vauth` embeds `*vauthlogin.Vauth`; `Connect`, `LookupSelf` and `Request`,
-the read-only `RC()`, `VAULT_ADDR()` and `VAULT_TOKEN()` readers, plus mutable
-`Agent`, `TokenCache`, `CacheDir`, `HomeDir`, `Environ`, `Stderr`, `Now` and
-`HTTPClient` settings, are owned by that client.
-Use `New()` or supply the embedded client explicitly for isolated programmatic
-use. `Config` holds only `Env`/`AgentCrypt`; `Stdout`/`Stdin` belong to vvauth.
-`ParseConfig`, `ReplaceEnv`, `ShellEscape` and `FunctionExists` support environment and shell operations.
-Construction consumes `RC()` directly: an independent JSON snapshot is decoded
-into vvauth's own configuration, without reopening its file. The JSON map does
-not retain YAML key order; `env.map` keys from this path have deterministic sorted
-order. Explicit `OrderedMap.Set` calls and standalone `ParseConfig` keep their
-insertion/YAML order. There is no second auth parser, token lifecycle, cache
-implementation or HTTP transport in vvauth.
+`Connect`, `LookupSelf`, `Request`, immutable `RC` and address/token readers
+belong to vauth-login. vvauth owns `Config`/`config`, profiles, KV operations,
+macro expansion, shell publication and GitLab initialization. Constructors
+check required CI variables when `env.gitlab` is true; explicit initialization
+bypasses that prerequisite. There is no Git inference at construction.
 
-Node and Go consume vauth-login 1.1.5 and ssh-agent-crypt 1.4.2; Node uses nyks
-6.17.0. `Gitlab()` asynchronously reads `origin` and publishes only `CI_PROJECT_PATH`,
-`CI_PROJECT_NAME`, `CI_PROJECT_NAMESPACE` and `CI_PROJECT_PATH_SLUG` as shell exports.
-`env.gitlab: true` makes construction refuse missing project variables before
-any Vault call, with a request to run `venv --gitlab` first. There is no Git inference at
-construction, authentication in `Gitlab()`, or configuration-file update.
+RC is the complete raw configuration; environment sections are copied before
+macro expansion. Go snapshot maps do not retain YAML key order. Both support
+SSH-agent-backed local secret decryption, inherited tokens and forced renewal.
+`env.map` names must be valid environment names. Values become strings; null
+becomes empty, and objects/arrays are rejected, including macro results. Raw RC
+values retain their JSON types. Missing Git identity fields export empty values.
 
-The SDK keeps language-native conventions: promises/throws in Node,
-values plus errors in Go. Node `Env(source, renew)` can publish directly;
-Go `Env(renew)` returns an ordered map for `PublishEnv`. CLI `--ir://json`
-outputs JSON without a trailing newline in both implementations. JSON object
-key order is not part of the profile (`show`) contract.
-
-## Tests
-
-Node and Go are tested against an in-process fake Vault (nonce, login, lookup,
-renew, identity, KV) and a throwaway `ssh-agent`; both suites cover token reuse,
-renewal in the final third, expiry, isolation of the cache by Vault and auth,
-corrupt or plaintext cache rejection, identity selection and the interoperability
-of the armored cache with the `ssh-agent-crypt` CLI.
+## Verification
 
 ```bash
-npm install && npm run eslint && npm test
-gofmt -l . && go vet ./... && go test ./...
+npm install
+npm run eslint
+npm test
+go vet ./...
+go test -race ./...
+GOOS=windows GOARCH=amd64 go build ./cmd/vauth
 ```
 
-CI (`test.yml`) runs both on Linux and Windows runners; `release.yml` builds the
-static binaries on `v*` tags, signs the Windows one when `SIGNING_SERVER` is
-set, and attaches `SHA256SUMS`.
+Tests use disposable SSH keys/agents, temporary configuration and loopback
+Vault fixtures; they do not require real credentials. Differential checks cover
+profile/KV operations, renewal, trust refusal, local secrets, configuration,
+JSON environment output and the shared armor/cache. Linux/Windows builds and
+Node 16 parsing/loading are checked separately. Release CI publishes npm,
+Go tags and signed Windows/Linux binaries; verify asset checksums independently.
