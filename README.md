@@ -45,6 +45,8 @@ stderr. Node uses cnyks for its CLI; Go has a native command interface.
 
 The first existing configuration is selected: `VAUTHRC`, `./.vauthrc`, then
 `~/.vauthrc`. It is YAML; `VAULT_ADDR` supplies the address fallback.
+The resolved SSH role is normalized to lowercase by vauth-login in both
+implementations; the source configuration, other fields and JWT roles are unchanged.
 
 ```yaml
 vault_addr: https://vault.example.test
