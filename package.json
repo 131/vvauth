@@ -1,6 +1,6 @@
 {
   "name": "vvauth",
-  "version": "2.6.2",
+  "version": "2.7.0",
   "description": "Vault Auth helper",
   "main": "index.js",
   "bin": {
