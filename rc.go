@@ -14,6 +14,7 @@ import (
 // Config contains only environment/profile settings; authentication is
 // parsed and owned by vauth-login.
 type Config struct {
+	Delegate   []string    `json:"delegate" yaml:"delegate"`
 	AgentCrypt *AgentCrypt `json:"ssh-agent-crypt" yaml:"ssh-agent-crypt"`
 	Env        *EnvConfig  `json:"env" yaml:"env"`
 }
@@ -179,9 +180,21 @@ func configFromRC(rc map[string]any, environ map[string]string) (*Config, error)
 
 func compileConfig(rc map[string]any, file string, environ map[string]string) (*Config, error) {
 	selected := map[string]any{}
-	for _, key := range []string{"env", "ssh-agent-crypt"} {
+	for _, key := range []string{"env", "ssh-agent-crypt", "delegate"} {
 		if value, ok := rc[key]; ok {
 			selected[key] = value
+		}
+	}
+	if roles, exists := selected["delegate"]; exists {
+		list, ok := roles.([]any)
+		if !ok {
+			return nil, fmt.Errorf("Invalid Vault delegation roles: expected a list of role names")
+		}
+		for _, value := range list {
+			role, ok := value.(string)
+			if !ok || !delegateRole.MatchString(role) {
+				return nil, fmt.Errorf("Invalid Vault delegation role")
+			}
 		}
 	}
 	// Clone the selected sections before Walk, preserving the raw RC snapshot.

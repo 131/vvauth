@@ -89,6 +89,58 @@ is not a sandbox for hostile configuration files.
 Tokens and resolved secrets are credentials: do not log them or store plaintext
 exports. Neither implementation prompts to trust an unknown project Vault.
 
+## Role-scoped delegation
+
+Declare Vault token roles at the root and export their children only where needed:
+
+```yaml
+vault_addr: https://vault.elipsdev.net
+ssh_auth:
+  role: $${env.VAUTH_USER_LOGIN}
+delegate:
+  - vauth-profile-ro
+env:
+  map:
+    VAULT_ROUTER_TOKEN: $${delegate.vauth-profile-ro}
+```
+
+Each entry names a server token role directly. `$${delegate.<role>}` resolves to
+its child token string. Multiple roles are supported; declaring a role does not
+export it automatically. `VAULT_TOKEN` remains the human/login token.
+
+Node `await client.Delegate(role, renew = false)` and Go
+`client.Delegate(role, renew)` return a token string (with native errors).
+They reuse the established parent and call `auth/token/create/<role>` on a miss.
+The request asks for a non-renewable service child without the default policy;
+the role must be non-orphan and owns the ACL. No policies or entity alias are
+overridden or checked by the client. A new child requests the parent's current
+positive, finite remaining TTL, obtained from lookup-self, not its original
+lease duration. A parent with TTL zero has no usable bounded delegation lifetime
+and is rejected. A child TTL exceeding that requested remaining lifetime is
+also rejected rather than capped. A rejected parent lookup (400/403) permits one normal login
+retry; issuance errors never cause a human-token fallback.
+
+The separate SSH-agent-encrypted cache lives in `~/.vauth/delegates`, using the
+same encryption dependency in Node and Go. Its filename hashes the JSON tuple
+`[Vault address without surrounding slashes, parent token, role]`; plaintext
+cache content contains only the child and its expiration time in Unix
+milliseconds. The parent lookup and child creation TTLs are anchored at each
+request start: elapsed lookup time is deducted from the requested parent
+lifetime, and response/processing time never extends the child deadline. A child
+already expired on arrival is rejected. Children remain reusable until that
+deadline, without online lookup on a cache hit. Expiry, a changed
+parent/role/address or explicit child renewal emits a new child. `token_cache: false` disables disk access, not in-memory reuse.
+Unavailable persistence leaves the child usable in memory; it never substitutes
+the human token. An unknown delegation macro, invalid response or issuance error
+fails environment resolution before any exports are published.
+
+`Env` calls `GetProfile`: entity metadata and, when a login metadata field
+exists, the personal `.vauth_database`. Its parent therefore needs those read
+permissions. `Delegate` itself performs neither profile read; its parent only
+needs permission to use the selected token role. JWT/SSH/OIDC grants and child
+issuance permissions are decided by the Vault authority, not by this client.
+Delegation does not add permissions to the parent.
+
 ## Security assessments
 
 [Claude](SECURITY_AUDIT_claude-opus-5-5.md) and

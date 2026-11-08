@@ -125,3 +125,39 @@ profile/KV operations, renewal, trust refusal, local secrets, configuration,
 JSON environment output and the shared armor/cache. Linux/Windows builds and
 Node 16 parsing/loading are checked separately. Release CI publishes npm,
 Go tags and Linux/signed Windows binaries; verify asset checksums independently.
+
+## Delegation verification
+
+The public SDK operation is `Delegate(role, renew)`: Node returns a promise of a
+string; Go returns `(string, error)`. `renew` forces only the child. `Env` keeps
+its existing parent-renew flag behavior and passes the flag to child issuance
+without logging in the parent again. No new CLI flag is needed.
+
+`test/delegate.js` and `delegate_test.go` use synthetic parent/child credentials
+and in-memory transport for roles, macros, TTL boundary reuse, renewal, parent
+changes, invalid responses, unknown references, disk-off memory reuse and
+failure-before-output. Go also verifies cache-key composition against Node.
+SSH-agent tests verify encrypted persistence and bidirectional Node/Go cache
+reuse; they need a throwaway SSH agent, not a real Vault or personal key.
+`delegate_interop_test.go` exercises both languages' real parent `Connect`,
+fresh-client disk reuse through the full TTL, exact expiry, request latency,
+renewal and parent/role/address isolation. It runs in `go test ./...`.
+
+Run the new tests without network or dependency changes:
+
+```bash
+node test/delegate.js
+GOPROXY=off GOFLAGS=-mod=readonly go test -v delegate.go delegate_test.go vauth.go rc.go vault.go gitlab.go
+```
+
+The explicit Go file list avoids the historical suite's unconditional agent
+`TestMain`; encrypted-cache tests skip if a synthetic agent cannot start. Full
+regressions remain `npm test` and `GOPROXY=off GOFLAGS=-mod=readonly go test ./...`.
+A restricted host that cannot bind SSH-agent sockets cannot validate the full
+suite or encrypted interop. The socket-free recipe does not establish that
+those skipped checks passed.
+
+Server role ACLs, entity/group grants and JWT/OIDC authority configuration are
+not simulated or applied here. `Env` needs its parent's existing profile-read
+grants; `Delegate` does not. These tests do not establish production grants or
+permission to issue a child under a particular authentication method.

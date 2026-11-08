@@ -39,9 +39,10 @@ const FunctionDecl = `function ` + FunctionName + `() { source <(/usr/bin/env va
 // fields may be set directly for programmatic use.
 type Vauth struct {
 	*vauthlogin.Vauth
-	Config Config
-	Stdout io.Writer
-	Stdin  io.Reader
+	Config    Config
+	Stdout    io.Writer
+	Stdin     io.Reader
+	delegates map[string]delegateCache
 }
 
 // CheckProjectVersion fails when manifest (a package.json) declares a
@@ -310,14 +311,30 @@ func (v *Vauth) Env(renew bool) (*OrderedMap, error) {
 			secrets[k] = val
 		}
 	}
+	delegate := map[string]string{}
+	for _, role := range v.Config.Delegate {
+		token, err := v.Delegate(role, renew)
+		if err != nil {
+			return nil, err
+		}
+		delegate[role] = token
+	}
 	dict := map[string]any{"env": v.Environ, "profile": merged, "secrets": secrets}
 	for _, key := range mapping.Keys {
 		if !envName.MatchString(key) {
 			return nil, fmt.Errorf("Invalid environment variable name '%s' in env.map", key)
 		}
-		value, err := envValue(nyksstring.ReplaceEnv(mapping.Values[key], dict))
+		expanded, err := replaceDelegates(mapping.Values[key], delegate)
+		if err != nil {
+			return nil, err
+		}
+		value, err := envValue(nyksstring.ReplaceEnv(expanded, dict))
 		if err != nil {
 			return nil, fmt.Errorf("Invalid environment value '%s' in env.map: %w", key, err)
+		}
+		value, err = replaceDelegates(value, delegate)
+		if err != nil {
+			return nil, err
 		}
 		env.Set(key, value)
 	}

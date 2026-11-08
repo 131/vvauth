@@ -42,8 +42,10 @@ class Vvauth extends VauthLogin {
     super();
 
     const rc = this.RC;
-    const config = Object.fromEntries(['env', 'ssh-agent-crypt'].filter(key => rc && Object.hasOwn(rc, key)).map(key => [key, rc[key]]));
+    const config = Object.fromEntries(['env', 'ssh-agent-crypt', 'delegate'].filter(key => rc && Object.hasOwn(rc, key)).map(key => [key, rc[key]]));
     this.config = walk(structuredClone(config), v => replaceEnv(v, {env : process.env}));
+    if(this.config.delegate !== undefined && (!Array.isArray(this.config.delegate) || this.config.delegate.some(role => typeof role !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(role))))
+      throw new Error('Invalid Vault delegation roles: expected a list of role names');
     if(this.config.env && this.config.env.gitlab === true) {
       const {args, dict} = parseArgs();
       const missing = ['CI_PROJECT_PATH', 'CI_PROJECT_NAME', 'CI_PROJECT_NAMESPACE', 'CI_PROJECT_PATH_SLUG'].filter(key => !process.env[key]);
@@ -190,11 +192,24 @@ class Vvauth extends VauthLogin {
         secrets = {...secrets, ...data};
       }
     }
+    const delegate = Object.create(null);
+    for(const role of this.config.delegate || [])
+      delegate[role] = await this.Delegate(role, renew);
+    const expandDelegates = value => value.replace(/\$\$\{([^}]+)\}|\$\$([a-z0-9._-]+)/ig, (macro, braced, bare) => {
+      const key = braced || bare;
+      if(key.toLowerCase() !== 'delegate' && !key.toLowerCase().startsWith('delegate.'))
+        return macro;
+      const role = key.slice('delegate.'.length);
+      if(!Object.hasOwn(delegate, role))
+        throw new Error(`Unknown Vault delegation '${role}'`);
+      return delegate[role];
+    });
     for(let [k, v] of Object.entries(map)) {
       // the key reaches `export KEY=...` unescaped; .vauthrc may come from an untrusted working directory
       if(!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
         throw new Error(`Invalid environment variable name '${k}' in env.map`);
-      env[k] = envValue(replaceEnv(envValue(v, k), {env : process.env, profile, secrets}), k);
+      const value = expandDelegates(envValue(v, k));
+      env[k] = expandDelegates(envValue(replaceEnv(value, {env : process.env, profile, secrets}), k));
     }
 
     if(source) {
@@ -269,5 +284,7 @@ const shellEscape = (arg) =>  {
   // see man bash
   return "'" + String(arg).replace(/'/g, '\'"\'"\'') + "'";
 };
+
+Object.assign(Vvauth.prototype, require('./delegate'));
 
 module.exports = Vvauth;

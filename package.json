@@ -7,7 +7,7 @@
     "vauth": "./cmd/vauth.js"
   },
   "scripts": {
-    "test": "node --test test/token-cache.js",
+    "test": "node --test test/token-cache.js test/delegate.js",
     "eslint": "eslint ."
   },
   "author": "",
