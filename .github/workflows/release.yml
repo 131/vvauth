@@ -18,6 +18,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+      # Go's interop tests execute the Node SDK as well.
+      - run: npm install
       - run: go vet ./... && go test ./...
       - uses: actions/checkout@v4
         with:
