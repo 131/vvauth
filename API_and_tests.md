@@ -16,6 +16,11 @@ venv --gitlab
 `env --ir://json` writes one JSON object to stdout, with diagnostics on stderr.
 JSON key order and final whitespace are not significant. `venv` sources
 `vauth env --source "$@"`; renewal forces authentication.
+On ordinary configuration/authentication/profile/macro errors, `env --source`
+writes exactly `return 1\n` to stdout, preserves diagnostics on stderr and exits
+nonzero. Sourcing that output returns 1 without exiting the caller or publishing
+partial exports. Successful output and non-source error output are unchanged;
+this does not cover crashes or a missing executable.
 
 ## Node CLI — cnyks
 
@@ -118,6 +123,12 @@ go vet ./...
 go test -race ./...
 GOOS=windows GOARCH=amd64 go build ./cmd/vauth
 ```
+
+`test/env-source.js` checks exact failure stdout, nonzero CLI status, Bash
+process-substitution sourcing and continued execution, plus successful exports,
+renewal flags and non-source failures. It uses temporary homes/configurations
+and a loopback Vault. `cmd/vauth/main_test.go` builds the native Go CLI and runs
+the same checks against that executable (requires Node and Bash).
 
 Tests use disposable SSH keys/agents, temporary configuration and loopback
 Vault fixtures; they do not require real credentials. Differential checks cover

@@ -30,6 +30,11 @@ venv --renew
 function venv() { source <(/usr/bin/env vauth env --source "$@"); }
 ```
 
+For ordinary configuration, authentication, profile or macro failures,
+`env --source` writes only `return 1` to stdout and exits nonzero; diagnostics
+remain on stderr. `venv` therefore returns 1 without closing the calling shell
+or applying partial exports. This is a CLI error protocol, not crash handling.
+
 `source ~/.bashrc` loads it in the current shell. `--renew` forces fresh
 authentication. For a machine-readable result:
 

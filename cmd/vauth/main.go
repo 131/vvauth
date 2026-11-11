@@ -95,7 +95,7 @@ func main() {
 	}
 }
 
-func run(argv []string) error {
+func run(argv []string) (err error) {
 	args, dict := parseArgs(argv)
 	if len(args) > 1 && args[0] == "env" && args[1] == "gitlab" {
 		args = []string{"gitlab"}
@@ -111,6 +111,14 @@ func run(argv []string) error {
 		os.Exit(1)
 	}
 	command, args := args[0], args[1:]
+	if command == "env" && truthy(param(args, dict, 0, "source")) {
+		defer func() {
+			if err != nil {
+				// Fail the sourced helper, not the shell that called it.
+				fmt.Fprintln(os.Stdout, "return 1")
+			}
+		}()
+	}
 	_, jsonOutput := dict["ir://json"]
 	if command == "version" || command == "--version" {
 		fmt.Println(strings.TrimPrefix(buildVersion(), "v"))

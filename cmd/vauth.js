@@ -9,4 +9,17 @@ const options = command ? [`--ir://run=${command}`] : [];
 if(command === 'env' && !dict['ir://json'])
   options.push('--ir://raw');
 
-cnyks(Vvauth, 'vauth', options);
+if(command === 'env' && dict.source) {
+  (async () => {
+    try {
+      await new Vvauth().Env(dict.source, dict.renew, dict.gitlab);
+    } catch(err) {
+      // Fail the sourced helper, not the shell that called it.
+      process.stdout.write('return 1\n');
+      console.error(err, err && err.stack || '');
+      process.exitCode = 1;
+    }
+  })();
+} else {
+  cnyks(Vvauth, 'vauth', options);
+}
