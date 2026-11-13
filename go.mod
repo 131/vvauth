@@ -6,7 +6,7 @@ go 1.22
 
 require (
 	github.com/131/ssh-agent-crypt v1.4.4
-	github.com/131/vauth-login v1.1.8
+	github.com/131/vauth-login v1.3.0
 	github.com/Masterminds/semver/v3 v3.5.0
 	gopkg.in/yaml.v3 v3.0.1
 )

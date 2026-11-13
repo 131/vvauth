@@ -80,17 +80,40 @@ func CheckProjectVersion(manifest, version string) error {
 // New loads authentication through vauth-login, then the environment/profile
 // configuration from the same selected .vauthrc.
 func New() (*Vauth, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, err
-	}
-	if err := CheckProjectVersion(filepath.Join(cwd, "package.json"), Version); err != nil {
+	if err := checkProjectVersion(); err != nil {
 		return nil, err
 	}
 	login, err := vauthlogin.New()
 	if err != nil {
 		return nil, err
 	}
+	return newClient(login)
+}
+
+// NewFromRC constructs from a YAML/JSON RC supplied in memory. The environment
+// is copied (nil inherits the process environment); native home Vault trust and
+// cache handling remain owned by vauth-login. Env returns exports to the caller.
+func NewFromRC(body []byte, environ map[string]string) (*Vauth, error) {
+	if err := checkProjectVersion(); err != nil {
+		return nil, err
+	}
+	login, err := vauthlogin.NewFromRC(body, environ)
+	if err != nil {
+		return nil, err
+	}
+	return newClient(login)
+}
+
+func checkProjectVersion() error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	return CheckProjectVersion(filepath.Join(cwd, "package.json"), Version)
+}
+
+// newClient compiles only the parent SDK's sections from the login RC snapshot.
+func newClient(login *vauthlogin.Vauth) (*Vauth, error) {
 	v := &Vauth{Vauth: login}
 	config, err := configFromRC(login.RC(), login.Environ)
 	if err != nil {

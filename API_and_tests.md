@@ -91,6 +91,30 @@ err = client.Unset(key)
 err = client.Gitlab()
 ```
 
+### Go embedding with an in-memory vauthrc
+
+```go
+client, err := vvauth.NewFromRC(rcBody, environ)
+// Check err before proceeding.
+exports, err := client.Env(false)
+// exports.Values is map[string]string; exports.Keys preserves declaration order.
+```
+
+`NewFromRC(body []byte, environ map[string]string) (*Vauth, error)` passes the
+YAML/JSON RC to vauth-login's constructor of the same name, then compiles the
+parent SDK's sections from its complete raw snapshot, just like `New()`.
+It preserves the authentication constructor's contract: nil environment
+inherits, non-nil environment is copied, configuration is not discovered or
+merged from RC files, and the native home `~/.vauthrc` still authorizes Vault
+addresses. The inline RC cannot authorize its own Vault. Home/cache/agent
+behavior and all network destination checks stay owned by vauth-login.
+
+`env.map`, local secrets, profile/KV, delegation and `env.gitlab` validation
+use their existing SDK semantics. `Env` returns exports and errors without
+publishing them to stdout or changing the process environment. Only explicitly
+calling `PublishEnv` performs shell publication. No RC temporary file is used.
+The Node constructor and both CLIs retain their existing entry points.
+
 `Connect`, `LookupSelf`, `Request`, immutable `RC` and address/token readers
 belong to vauth-login. vvauth owns `Config`/`config`, profiles, KV operations,
 macro expansion, shell publication and GitLab initialization. Constructors
