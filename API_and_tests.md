@@ -10,6 +10,7 @@ contracts differ except for the shared calls below.
 vauth env --ir://json
 venv
 venv --renew
+venv --ping
 venv --gitlab
 ```
 
@@ -21,6 +22,16 @@ writes exactly `return 1\n` to stdout, preserves diagnostics on stderr and exits
 nonzero. Sourcing that output returns 1 without exiting the caller or publishing
 partial exports. Successful output and non-source error output are unchanged;
 this does not cover crashes or a missing executable.
+
+`env --ping` uses SDK `Ping()` in both languages (Node `Promise<void>`, Go
+`error`). Node reads the current process environment; Go uses the constructor's
+copied `Environ` snapshot. It checks the inherited parent plus variables mapped
+exactly to declared delegation macros, not cached/replacement credentials or
+other mapped secrets. It performs only trusted Vault `lookup-self` requests.
+Success emits nothing; missing/rejected/unreachable/invalid credentials fail,
+with `return 1` in source mode. A TTL of zero is valid (unlimited).
+`--renew` and `--gitlab` conflict with `--ping`. See the
+[README runtime probe contract](README.md#probe-the-current-runtime).
 
 ## Node CLI — cnyks
 
@@ -37,7 +48,7 @@ methods; its interactive rendering is not the Go CLI contract.
 
 | Command | Parameters | Effect |
 | --- | --- | --- |
-| `env` | `--source`, `--renew`, `--gitlab` | Resolve environment, export it, or initialize GitLab variables |
+| `env` | `--source`, `--renew`, `--gitlab`, `--ping` | Resolve/export environment, initialize GitLab variables or probe runtime tokens |
 | `login` | `--source`, `--renew` | Authentication only; optionally export only VAULT_TOKEN |
 | `show` | — | Merged profile/private database |
 | `set` | `--k=KEY --v=VALUE` | Store an upper-cased private key |
@@ -60,7 +71,7 @@ vauth <command> [positionals...] [--flag=value] [--ir://json]
 Commands are `env`, `login`, `show`, `set`, `unset`, `dotenv`, `install`, `version`
 and `gitlab`. `set KEY VALUE` / `unset KEY` also accept `--k` / `--v`. Boolean
 flags accept true, false, 0 and empty forms. `env` supports source, renew and
-gitlab flags; `login` supports source and renew. Hidden `connect` remains
+gitlab and ping flags; `login` supports source and renew. Hidden `connect` remains
 available for token-only callers. No command runner is part of this API.
 
 Objects are JSON, strings are raw without JSON mode, and version is one line.
@@ -73,6 +84,7 @@ const Vauth = require('vvauth');
 const client = new Vauth();
 const token = await client.Connect(renew);
 const env = await client.Env(source, renew, gitlab);
+await client.Ping(); // validates current process credentials; no exports
 await client.Login(source, renew);
 const profile = await client.Show();
 await client.Set(key, value);
@@ -84,6 +96,7 @@ await client.Gitlab();
 client, err := vvauth.New()
 token, err := client.Connect(renew)
 env, err := client.Env(renew)
+err = client.Ping() // validates the inherited Environ snapshot
 err = client.Login(source, renew)
 profile, err := client.Show()
 err = client.Set(key, value)
@@ -150,7 +163,11 @@ GOOS=windows GOARCH=amd64 go build ./cmd/vauth
 
 `test/env-source.js` checks exact failure stdout, nonzero CLI status, Bash
 process-substitution sourcing and continued execution, plus successful exports,
-renewal flags and non-source failures. It uses temporary homes/configurations
+renewal flags and non-source failures. It also covers ping success, expired
+parents/children, missing credentials, network/response failures, unchanged
+shell credentials and secret-free diagnostics. `ping_test.go` checks the native
+SDK runtime snapshot; the same shared test file checks the Node SDK probe.
+The CLI fixtures use temporary homes/configurations
 and a loopback Vault. `cmd/vauth/main_test.go` builds the native Go CLI and runs
 the same checks against that executable (requires Node and Bash).
 

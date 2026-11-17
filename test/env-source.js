@@ -164,3 +164,118 @@ test('renew flag still forces login instead of the inherited token', async t => 
   assert.match(renewed.stdout, /export VAULT_TOKEN='synthetic-issued'/);
   assert.equal(logins, 1);
 });
+
+const pingRC = {
+  delegate : ['router', 'project'],
+  env : {map : {
+    VAULT_ROUTER_TOKEN : '$${delegate.router}',
+    PROJECT_ACCESS : '$$delegate.project',
+    SECRET_TOKEN : '$${secrets.secret}',
+    PARENT_COPY : '$${env.VAULT_TOKEN}',
+  }},
+};
+
+for(const [name, missing, rejected, broken] of [
+  ['valid runtime', null, null, false],
+  ['unlimited token', null, null, 'unlimited'],
+  ['missing parent', 'VAULT_TOKEN', null, false],
+  ['missing delegated token', 'VAULT_ROUTER_TOKEN', null, false],
+  ['expired parent', null, 'synthetic-parent', false],
+  ['expired delegated token', null, 'synthetic-router', false],
+  ['unreachable Vault', null, null, true],
+  ['malformed lookup', null, null, 'malformed'],
+  ['invalid TTL', null, null, 'ttl'],
+]) {
+  test(`${binary ? 'Go' : 'Node'} env --ping: ${name}`, async t => {
+    const requests = [];
+    const f = await fixture(t, JSON.parse(JSON.stringify(pingRC)), (req, res) => {
+      requests.push([req.method, req.url, req.headers['x-vault-token']]);
+      if(broken === true) { req.socket.destroy(); return; }
+      if(req.headers['x-vault-token'] === rejected) {
+        res.writeHead(403);
+        res.end('synthetic-parent synthetic-router synthetic-project');
+      } else if(broken === 'malformed') {
+        res.end('synthetic-parent synthetic-router synthetic-project');
+      } else {
+        res.end(JSON.stringify({data : {ttl : broken === 'ttl' ? -1 : broken === 'unlimited' ? 0 : 3600}}));
+      }
+    });
+    Object.assign(f.env, {
+      VAULT_TOKEN : 'synthetic-parent', VAULT_ROUTER_TOKEN : 'synthetic-router',
+      PROJECT_ACCESS : 'synthetic-project', SECRET_TOKEN : 'synthetic-secret',
+      UNMAPPED_TOKEN : 'synthetic-unmapped',
+    });
+    if(missing) delete f.env[missing];
+    const valid = !missing && !rejected && (!broken || broken === 'unlimited');
+    for(const flags of [['--source'], [], ['--ir://json']]) {
+      const result = await f.cli('env', '--ping', ...flags);
+      assert.equal(result.code, valid ? 0 : 1);
+      assert.equal(result.stdout, !valid && flags.includes('--source') ? 'return 1\n' : '');
+      if(valid) assert.equal(result.stderr, '');
+      else assert.match(result.stderr, /Vault ping/);
+      for(const secret of ['synthetic-parent', 'synthetic-router', 'synthetic-project', 'synthetic-secret'])
+        assert.ok(!result.stderr.includes(secret));
+    }
+    const shell = await f.shell(`
+function venv() { source <(/usr/bin/env vauth env --source "$@"); }
+before_parent=\${VAULT_TOKEN-unset}
+before_child=\${VAULT_ROUTER_TOKEN-unset}
+venv --ping
+status=$?
+[ "\${VAULT_TOKEN-unset}" = "$before_parent" ] && [ "\${VAULT_ROUTER_TOKEN-unset}" = "$before_child" ] && unchanged=yes
+printf '%s|continued|%s\\n' "$status" "$unchanged"
+`);
+    assert.equal(shell.code, 0);
+    assert.equal(shell.stdout, `${valid ? 0 : 1}|continued|yes\n`);
+    assert.ok(requests.every(([method, url]) => method === 'GET' && url === '/v1/auth/token/lookup-self'));
+    assert.ok(requests.every(([, , token]) => ['synthetic-parent', 'synthetic-router', 'synthetic-project'].includes(token)));
+    if(valid) assert.deepEqual(requests.slice(0, 3).map(([, , token]) => token), ['synthetic-parent', 'synthetic-project', 'synthetic-router']);
+  });
+}
+
+test('ping rejects renew or gitlab without contacting Vault', async t => {
+  let calls = 0;
+  const f = await fixture(t, {}, (req, res) => { calls++; res.end('{}'); });
+  f.env.VAULT_TOKEN = 'synthetic-parent';
+  for(const flag of ['--renew', '--gitlab']) {
+    const result = await f.cli('env', '--source', '--ping', flag);
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, 'return 1\n');
+    assert.match(result.stderr, /--ping cannot be combined/);
+  }
+  assert.equal(calls, 0);
+  const result = await f.cli('env', '--ping', '--renew=0');
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /invalid lookup response/);
+  assert.equal(calls, 1);
+});
+
+test('Node SDK Ping uses live inherited credentials without Env or Connect', async t => {
+  const Vvauth = require('../index');
+  const v = Object.create(Vvauth.prototype);
+  Object.defineProperties(v, {
+    VAULT_ADDR : {value : 'https://synthetic.invalid'},
+    VAULT_TOKEN : {value : 'synthetic-stale-client-parent'},
+    RC : {value : pingRC},
+  });
+  v.config = pingRC;
+  const original = process.env;
+  process.env = {VAULT_TOKEN : 'synthetic-parent', VAULT_ROUTER_TOKEN : 'synthetic-router', PROJECT_ACCESS : 'synthetic-project'};
+  t.after(() => { process.env = original; });
+  const tokens = [];
+  v.Request = async (method, route, token) => {
+    assert.equal(method, 'GET');
+    assert.equal(route, 'auth/token/lookup-self');
+    tokens.push(token);
+    return {status : 200, body : '{"data":{"ttl":3600}}'};
+  };
+  v.Connect = v.Env = async () => { throw new Error('must not resolve credentials'); };
+  await v.Ping();
+  assert.deepEqual(tokens, ['synthetic-parent', 'synthetic-project', 'synthetic-router']);
+  v.Request = async () => { throw new Error('synthetic-parent synthetic-router'); };
+  await assert.rejects(v.Ping(), err => {
+    assert.equal(err.message, 'Vault ping failed for VAULT_TOKEN: request failed');
+    assert.ok(!err.stack.includes('synthetic-parent'));
+    return true;
+  });
+});

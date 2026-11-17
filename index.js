@@ -145,6 +145,39 @@ class Vvauth extends VauthLogin {
     return {entity_id, identity, profile, database};
   }
 
+  // Probe inherited credentials only: never Connect, resolve Env, or read token caches.
+  async Ping() {
+    if(!this.VAULT_ADDR)
+      throw new Error('Vault ping requires VAULT_ADDR');
+    const keys = ['VAULT_TOKEN'];
+    const map = this.RC.env && this.RC.env.map || {};
+    for(const key of Object.keys(map).sort()) {
+      if(typeof map[key] !== 'string') continue;
+      const macro = map[key].match(/^\$\$(?:\{delegate\.([A-Za-z0-9_.-]+)\}|delegate\.([A-Za-z0-9_.-]+))$/i);
+      if(!macro) continue;
+      if(!(this.config.delegate || []).includes(macro[1] || macro[2]))
+        throw new Error('Unknown Vault delegation in env.map');
+      if(!keys.includes(key)) keys.push(key);
+    }
+    for(const key of keys) {
+      const token = process.env[key];
+      if(!token) throw new Error(`Vault ping requires inherited ${key}`);
+      let response;
+      try {
+        response = await this.Request('GET', 'auth/token/lookup-self', token, null, 0);
+      } catch(err) {
+        // Transport errors and Vault response bodies can contain credentials.
+        throw new Error(`Vault ping failed for ${key}: request failed`);
+      }
+      if(response.status !== 200)
+        throw new Error(`Vault ping failed for ${key}: HTTP ${response.status}`);
+      let data;
+      try { data = JSON.parse(response.body).data; } catch(err) { /* Invalid lookup response. */ }
+      if(!data || !Number.isFinite(data.ttl) || data.ttl < 0)
+        throw new Error(`Vault ping failed for ${key}: invalid lookup response`);
+    }
+  }
+
   async Env(source = false, renew = false, gitlab = false) /**
    * @alias env
    */ {

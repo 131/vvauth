@@ -17,7 +17,7 @@ import (
 const usage = `Usage: vauth <command> [--flag[=value]] [--ir://json]
 
 Commands:
-  env [--source] [--renew]    Resolve the .vauthrc environment (JSON with --ir://json)
+  env [--source] [--renew | --ping] Resolve the .vauthrc environment (JSON with --ir://json)
   login [--source] [--renew]  Authenticate; --source exports VAULT_TOKEN
   dotenv                      Print the environment as K=v lines
   show                        Print the identity profile and .vauth_database
@@ -97,10 +97,11 @@ func main() {
 
 func run(argv []string) (err error) {
 	args, dict := parseArgs(argv)
+	ping := truthy(dict["ping"], dict["ping"] != "")
 	if len(args) > 1 && args[0] == "env" && args[1] == "gitlab" {
 		args = []string{"gitlab"}
 	}
-	if truthy(dict["gitlab"], dict["gitlab"] != "") {
+	if !ping && truthy(dict["gitlab"], dict["gitlab"] != "") {
 		args = []string{"gitlab"}
 	}
 	if _, ok := dict["version"]; ok && len(args) == 0 {
@@ -136,6 +137,12 @@ func run(argv []string) (err error) {
 	switch command {
 	case "env":
 		source, renew := truthy(param(args, dict, 0, "source")), truthy(param(args, dict, 1, "renew"))
+		if ping {
+			if renew || truthy(dict["gitlab"], dict["gitlab"] != "") {
+				return fmt.Errorf("--ping cannot be combined with --renew or --gitlab")
+			}
+			return v.Ping()
+		}
 		env, err := v.Env(renew)
 		if err != nil {
 			return err

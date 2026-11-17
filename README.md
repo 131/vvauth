@@ -22,6 +22,7 @@ vauth install
 source ~/.bashrc
 venv
 venv --renew
+venv --ping
 ```
 
 `vauth install` defines the Bash function `venv` in `~/.bashrc`:
@@ -45,6 +46,22 @@ vauth env --ir://json
 Both implementations write one JSON object to stdout; diagnostics remain on
 stderr. Node uses cnyks for its CLI; Go has a native command interface.
 [API_and_tests.md](API_and_tests.md) defines both contracts.
+
+## Probe the current runtime
+
+`venv --ping` (or `vauth env --ping`) validates the inherited `VAULT_TOKEN`
+and each inherited variable mapped exactly to a declared `$${delegate.role}`
+or `$$delegate.role` in the selected RC. Other mapped secrets are not probed.
+Each credential is sent only to that configuration's trusted Vault `lookup-self`;
+a valid TTL of zero denotes an unlimited token. Missing credentials, rejected
+lookups, invalid responses and unreachable Vault fail with status 1.
+
+The probe never logs in, renews, resolves profiles, reads token caches, issues
+children or changes the environment. It checks the invoking runtime, not an
+already-running daemon's environment. Success is silent, including with
+`--source` and `--ir://json`; `--source` failures output only `return 1`.
+Diagnostics identify the variable and failure, never its token or response body.
+`--ping` cannot be combined with `--renew` or `--gitlab`.
 
 ## Configuration
 
