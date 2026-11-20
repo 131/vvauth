@@ -72,7 +72,9 @@ Commands are `env`, `login`, `show`, `set`, `unset`, `dotenv`, `install`, `versi
 and `gitlab`. `set KEY VALUE` / `unset KEY` also accept `--k` / `--v`. Boolean
 flags accept true, false, 0 and empty forms. `env` supports source, renew and
 gitlab and ping flags; `login` supports source and renew. Hidden `connect` remains
-available for token-only callers. No command runner is part of this API.
+available for token-only callers. `login --source` exports only `VAULT_TOKEN`
+and the resolved `VAULT_ADDR`, without fetching profile data, resolving mapped
+secrets, or issuing delegated tokens. No command runner is part of this API.
 
 Objects are JSON, strings are raw without JSON mode, and version is one line.
 Exit is zero on success and one on failure; errors go to stderr.

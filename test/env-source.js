@@ -142,6 +142,32 @@ printf '%s|continued|%s|%s|%s|%s\\n' "$status" "$OK" "$COUNT" "$FLAG" "$EMPTY"
   assert.equal(shell.stdout, `0|continued|${values.OK}|42|false|\n`);
 });
 
+test('login --source exports only the resolved Vault session', async t => {
+  const requests = [];
+  const f = await fixture(t, {
+    jwt_auth : {role : 'synthetic-role', jwt : 'synthetic-jwt'},
+    delegate : ['router'],
+    env : {paths : ['synthetic-path'], map : {ROUTER : '$${delegate.router}'}},
+  }, (req, res) => {
+    requests.push(req.url);
+    if(req.url === '/v1/auth/jwt/login') {
+      res.end('{"auth":{"client_token":"synthetic-issued","lease_duration":3600,"renewable":false}}');
+    } else {
+      res.writeHead(403);
+      res.end('{}');
+    }
+  });
+  const address = f.env.VAULT_ADDR;
+  delete f.env.VAULT_ADDR;
+  const result = await f.cli('login', '--source');
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.stdout.match(/^export .*$/gm), [
+    "export VAULT_TOKEN='synthetic-issued'", `export VAULT_ADDR='${address}'`,
+  ]);
+  assert.doesNotMatch(result.stderr, /synthetic-issued/);
+  assert.deepEqual(requests, ['/v1/auth/jwt/login']);
+});
+
 test('renew flag still forces login instead of the inherited token', async t => {
   let logins = 0;
   const f = await fixture(t, {jwt_auth : {role : 'synthetic-role', jwt : 'synthetic-jwt'}}, (req, res) => {

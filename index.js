@@ -88,7 +88,7 @@ class Vvauth extends VauthLogin {
    */ {
     await this.Connect(renew);
     if(source) {
-      let env = {VAULT_TOKEN : this.VAULT_TOKEN || ''};
+      let env = {VAULT_TOKEN : this.VAULT_TOKEN || '', VAULT_ADDR : this.VAULT_ADDR || ''};
       this.PublishEnv(env);
     }
   }

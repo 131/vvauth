@@ -368,7 +368,7 @@ func (v *Vauth) Env(renew bool) (*OrderedMap, error) {
 // .vauthrc may come from an untrusted working directory.
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// Login connects, and with source publishes VAULT_TOKEN as shell exports.
+// Login connects without loading the Vault environment and optionally exports its credentials.
 func (v *Vauth) Login(source, renew bool) error {
 	if _, err := v.Connect(renew); err != nil {
 		return err
@@ -376,6 +376,7 @@ func (v *Vauth) Login(source, renew bool) error {
 	if source {
 		env := &OrderedMap{}
 		env.Set("VAULT_TOKEN", v.VAULT_TOKEN())
+		env.Set("VAULT_ADDR", v.VAULT_ADDR())
 		v.PublishEnv(env)
 	}
 	return nil
